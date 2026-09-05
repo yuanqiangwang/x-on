@@ -10,6 +10,29 @@ type AppInfo = {
   icon?: string | null;
 };
 
+type Settings = {
+  accelerator?: string;
+  autostart?: boolean;
+  font?: string | null;
+};
+
+// UI font chain: the user-supplied font name from settings.json is prepended
+// (VS Code editor.fontFamily style); empty falls back to the bundled LXGW WenKai
+// default in index.html's :root --font. Kept in sync with that value.
+const FALLBACK_FONT_CHAIN =
+  '"LXGW WenKai GB Screen", "LXGW WenKai", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
+
+function applyFont(font?: string | null) {
+  const docStyle = document.documentElement.style;
+  const name = font?.trim();
+  if (name) {
+    docStyle.setProperty("--font", `"${name}", ${FALLBACK_FONT_CHAIN}`);
+  } else {
+    // Empty => let the :root default (bundled LXGW WenKai) apply.
+    docStyle.removeProperty("--font");
+  }
+}
+
 const win = getCurrentWebviewWindow();
 const input = document.getElementById("search") as HTMLInputElement;
 const list = document.getElementById("results") as HTMLUListElement;
@@ -18,13 +41,16 @@ let apps: AppInfo[] = [];
 let filtered: AppInfo[] = [];
 let selected = 0;
 
-// Cached icon data URI per launch path, or `null` for a proven miss so we never
-// re-request a row whose icon failed to extract. Loaded in one batched IPC call
-// per render (not one invoke per row), and capped so a large result set doesn't
-// trigger a huge extraction burst on the first keystroke.
+// Cached icon data URI per launch path, or `null` once we've given up on a row.
+// `iconTries` caps the retry budget so a transient extraction failure (e.g. the
+// shell icon cache warming up on first render) isn't cached as a permanent miss.
+// Loaded in batched IPC calls per render (not one invoke per row); `MAX_ICONS_PER_BATCH`
+// is a chunk size, so the whole set is covered rather than just the first 50.
 const iconCache = new Map<string, string | null>();
 const iconFetching = new Set<string>();
+const iconTries = new Map<string, number>();
 const MAX_ICONS_PER_BATCH = 50;
+const MAX_ICON_TRIES = 3;
 
 async function loadApps(force = false) {
   const cmd = force ? "rescan" : "scan_apps";
@@ -210,31 +236,50 @@ function avatarEl(a: AppInfo): HTMLElement {
   return av;
 }
 
-// Batch-load icons for the rows that don't have one cached yet. One IPC call with
-// the whole set of missing paths, rather than N calls. When it resolves we cache
-// every result (misses included) and re-render to swap letter avatars for icons.
+// Batch-load icons for rows that don't have a cached result yet. `MAX_ICONS_PER_BATCH`
+// is now a chunk size — we cover the whole set in batches rather than only the first
+// 50, so a long list's tail (visible after scrolling) still gets icons. A failed
+// extraction is counted against a retry budget instead of being cached as a permanent
+// miss, so a one-off failure (e.g. the shell icon cache warming up) recovers.
 async function loadMissingIcons(apps: AppInfo[]) {
-  const missing = apps
-    .filter((a) => !iconCache.has(a.launchPath) && !iconFetching.has(a.launchPath))
-    .slice(0, MAX_ICONS_PER_BATCH)
-    .map((a) => a.launchPath);
-  if (missing.length === 0) return;
+  const pending = apps.filter(
+    (a) =>
+      !iconCache.has(a.launchPath) &&
+      !iconFetching.has(a.launchPath) &&
+      (iconTries.get(a.launchPath) ?? 0) < MAX_ICON_TRIES,
+  );
+  if (pending.length === 0) return;
 
-  missing.forEach((p) => iconFetching.add(p));
-  try {
-    const map = await invoke<Record<string, string | null>>("get_app_icons", { paths: missing });
-    for (const [p, uri] of Object.entries(map)) {
-      iconCache.set(p, uri ?? null);
-      const app = apps.find((a) => a.launchPath === p);
-      if (app) app.icon = uri ?? null;
+  for (let i = 0; i < pending.length; i += MAX_ICONS_PER_BATCH) {
+    const chunk = pending.slice(i, i + MAX_ICONS_PER_BATCH);
+    const paths = chunk.map((a) => a.launchPath);
+    paths.forEach((p) => iconFetching.add(p));
+    try {
+      const map = await invoke<Record<string, string | null>>("get_app_icons", { paths });
+      for (const p of paths) {
+        const uri = map[p] ?? null;
+        if (uri) {
+          iconCache.set(p, uri);
+        } else {
+          const t = (iconTries.get(p) ?? 0) + 1;
+          iconTries.set(p, t);
+          if (t >= MAX_ICON_TRIES) iconCache.set(p, null);
+        }
+      }
+    } catch {
+      // Whole-batch failure: don't blame the icons, just spend one retry each.
+      paths.forEach((p) => iconTries.set(p, (iconTries.get(p) ?? 0) + 1));
+    } finally {
+      paths.forEach((p) => iconFetching.delete(p));
     }
-  } catch {
-    // Extraction failed wholesale — don't retry these, stay on letter avatars.
-    missing.forEach((p) => iconCache.set(p, null));
-  } finally {
-    missing.forEach((p) => iconFetching.delete(p));
-    render();
   }
+
+  // Reflect any newly-cached icons onto the in-memory apps for the render pass.
+  for (const a of apps) {
+    const uri = iconCache.get(a.launchPath);
+    if (uri) a.icon = uri;
+  }
+  render();
 }
 
 function launch(app: AppInfo) {
@@ -250,29 +295,30 @@ input.addEventListener("input", () => {
   debounceTimer = window.setTimeout(() => render(), 40);
 });
 
-input.addEventListener("keydown", (e) => {
-  if (e.key === "ArrowDown") {
-    e.preventDefault();
-    if (filtered.length) selected = (selected + 1) % filtered.length;
-    render();
-  } else if (e.key === "ArrowUp") {
-    e.preventDefault();
-    if (filtered.length) selected = (selected - 1 + filtered.length) % filtered.length;
-    render();
-  } else if (e.key === "Enter") {
-    const pick = filtered[selected];
-    if (pick) launch(pick);
-  }
-});
-
-// Escape hides the launcher no matter which element holds focus inside the
-// document (the input, a clicked result row, or the body). Listen on the document
-// in the capture phase so it fires before any widget handler and works even after
-// focus drifts off the search box.
+// Direction keys + Enter are selection/navigation, so they should mean the same
+// whether focus is on the search box, a clicked result row, or the body — the
+// list's native scrolling would otherwise hijack them once focus leaves the
+// input. Listen on the document in the capture phase so this runs before any
+// widget handler. Keys part of an in-progress IME candidate session (isComposing)
+// are passed through so arrow keys keep picking pinyin candidates and Esc keeps
+// cancelling them, instead of navigating the list.
 document.addEventListener(
   "keydown",
   (e) => {
-    if (e.key === "Escape") {
+    if (e.isComposing) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (filtered.length) selected = (selected + 1) % filtered.length;
+      render();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (filtered.length) selected = (selected - 1 + filtered.length) % filtered.length;
+      render();
+    } else if (e.key === "Enter") {
+      const pick = filtered[selected];
+      if (pick) launch(pick);
+    } else if (e.key === "Escape") {
       e.preventDefault();
       win.hide();
     }
@@ -288,9 +334,23 @@ win.listen("wake", () => {
   input.focus();
 });
 
+// Reload the index when it changes underneath us (tray portable add/remove, rescan).
+win.listen("index-updated", () => loadApps(true));
+
+// Hot-apply a font change the user made in settings.json (backend watches it).
+win.listen<Settings>("settings-changed", (e) => {
+  applyFont(e.payload.font);
+});
+
 input.addEventListener("focus", render);
 
 (async () => {
+  try {
+    const settings = await invoke<Settings>("get_config");
+    applyFont(settings.font);
+  } catch (e) {
+    console.error(e);
+  }
   await loadApps(true);
   input.focus();
 })();
