@@ -1,8 +1,7 @@
 # x-on — 极速启动器
 
-> 按 `Alt+Space`，其余交给它。
 
-**x-on 把「开始 / 桌面 / 资源管理器」里找应用的那几步，压缩成一个肌肉记忆。它不解释，只执行。**
+**x-on 一个极简Windows 启动器**
 
 [![Tauri](https://img.shields.io/badge/Tauri%20v2-285780?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app)
 [![Rust](https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -10,14 +9,6 @@
 ![Windows](https://img.shields.io/badge/Windows-0078d6?style=flat-square&logo=windows&logoColor=white)
 
 ---
-
-## 为什么这么快
-
-绝大多数启动器的问题是：**在你需要它之前，它并不存在。** 按下去才冷启动、才扫描、才索引——所以慢。
-
-x-on 反着来：**程序常驻，窗口始终预热，索引在后台建好。** 你按快捷键的那一刻，它已经在等你了。扫描、提取、排序这些脏活不在你的路径上，只在你看不见的地方做。
-
-**最快的启动器，永远感觉不到它存在。**
 
 ## 拼音级模糊
 
@@ -85,6 +76,5 @@ npm run tauri build    # 构建 release（产物在 src-tauri/target/release/）
 ## 许可
 
 - 内置字体 **霞鹜文楷**（屏显版 GB）：[SIL Open Font License 1.1](public/fonts/OFL.txt)
-- 代码：未指定
 
 > 启动器是用来消失的。最成功的启动器，你永远感觉不到它。
