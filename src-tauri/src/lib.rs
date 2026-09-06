@@ -95,10 +95,9 @@ struct ConfigWatcher {
 #[derive(Default)]
 struct AppliedAutostart(Mutex<Option<bool>>);
 
-/// The index filesystem watcher. Held in state (not a bare local) so `add_portable`
-/// can extend it at runtime into the newly-registered exe's folder, and so the
-/// watcher callback can tell whether a change is relevant without re-reading the
-/// manifest. `dirs` is the set of folders already watched.
+/// The index filesystem watcher. Held in state (not a bare local) so it lives for
+/// the process lifetime, and so the watcher callback can tell whether a change is
+/// relevant without re-reading the manifest. `dirs` is the set of folders watched.
 #[derive(Default)]
 struct IndexWatcher {
     watcher: Mutex<Option<Box<dyn notify::Watcher + Send>>>,
@@ -498,8 +497,6 @@ fn add_portable(app: &AppHandle) {
             }
             m.apps.push(PortableEntry { path: path_str.clone(), name: None });
             if save_manifest(&handle, &m).is_ok() {
-                // Watch the new exe's folder so deleting the file hides it live.
-                ensure_watch(&handle, &path_str);
                 refresh_after_change(&handle);
             }
         });
@@ -664,8 +661,9 @@ impl<F: Fn()> Debouncer<F> {
 
 /// Watch the Start-Menu roots (recursive) plus every registered portable exe's
 /// folder (non-recursive), so installs/uninstalls and portable exe-deletions all
-/// refresh the index live. Stored in `IndexWatcher` state so `add_portable` can
-/// extend it at runtime via `ensure_watch`.
+/// refresh the index live. Portable folders are watched from startup (the manifest
+/// below), not extended while running — that would pin a directory the user has
+/// just added and may want to delete.
 fn watch_index_changes(app: &AppHandle) -> notify::Result<()> {
     use notify::RecursiveMode;
 
@@ -704,8 +702,8 @@ fn watch_index_changes(app: &AppHandle) -> notify::Result<()> {
         dirs.insert(d.clone());
     }
 
-    // Keep the watcher even when the current set is empty, so `add_portable` can
-    // extend it later through `ensure_watch`.
+    // Keep the watcher (and its dir set) for the process lifetime; the callback
+    // reads `dirs` to decide whether a change is relevant.
     if let Some(state) = app.try_state::<IndexWatcher>() {
         *state.watcher.lock().unwrap() = Some(watcher);
         *state.dirs.lock().unwrap() = dirs;
@@ -730,32 +728,6 @@ fn watch_index_changes(app: &AppHandle) -> notify::Result<()> {
 /// Extend the index watcher into a portable exe's folder so removing the exe hides
 /// it. Idempotent: no-op when that folder is already watched (including when it IS
 /// a start-menu root, which is already recursive).
-fn ensure_watch(app: &AppHandle, exe: &str) {
-    let Some(state) = app.try_state::<IndexWatcher>() else {
-        return;
-    };
-    let Some(parent) = Path::new(exe).parent().map(|p| p.to_path_buf()) else {
-        return;
-    };
-    if !parent.exists() {
-        return;
-    }
-    {
-        let dirs = state.dirs.lock().unwrap();
-        if dirs.contains(&parent) {
-            return;
-        }
-    }
-    // Watch outside the dirs lock so we never nest two Mutexes.
-    let mut guard = state.watcher.lock().unwrap();
-    if let Some(w) = guard.as_mut() {
-        if w.watch(&parent, notify::RecursiveMode::NonRecursive).is_ok() {
-            drop(guard); // release the watch guard before taking dirs
-            state.dirs.lock().unwrap().insert(parent);
-        }
-    }
-}
-
 /// Current launcher config; the frontend reads `font` (and peers) at load and
 /// again on every settings-changed event.
 #[tauri::command]
