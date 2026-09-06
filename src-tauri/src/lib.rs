@@ -124,6 +124,7 @@ pub struct AppInfo {
 
 /// Launcher settings, read from the app config dir on startup.
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Config {
     #[serde(default = "Config::default_accelerator")]
     accelerator: String,
@@ -136,6 +137,10 @@ struct Config {
     /// `font` is hot-applied when the file is watched.
     #[serde(default)]
     font: String,
+    /// Max results shown in the launcher list; the window height follows it.
+    /// Hot-applied when the file is watched. Default 6.
+    #[serde(default = "Config::default_result_rows")]
+    result_rows: usize,
 }
 
 impl Default for Config {
@@ -144,6 +149,7 @@ impl Default for Config {
             accelerator: DEFAULT_ACCELERATOR.to_string(),
             autostart: false,
             font: String::new(),
+            result_rows: Config::default_result_rows(),
         }
     }
 }
@@ -151,6 +157,10 @@ impl Default for Config {
 impl Config {
     fn default_accelerator() -> String {
         DEFAULT_ACCELERATOR.to_string()
+    }
+
+    fn default_result_rows() -> usize {
+        6
     }
 }
 
@@ -217,7 +227,9 @@ fn write_default_settings_template(app: &AppHandle) -> Result<(), String> {
   // 开机自启：改后立即生效（写入/删除系统自启项）
   "autostart": false,
   // 界面字体：系统已安装字体名，改后立即生效；留空 = 系统默认字体
-  "font": ""
+  "font": "",
+  // 列表最大候选行数：改后立即生效（窗口高度随之自适应）
+  "resultRows": 6
 }"#;
     persist_settings(app, template)
 }

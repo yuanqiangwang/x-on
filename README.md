@@ -57,11 +57,14 @@ npm run tauri build    # 构建 release（产物在 src-tauri/target/release/）
   // 开机自启：改后立即生效（写入/删除系统自启项）
   "autostart": false,
   // 界面字体：系统已安装字体名，改后立即生效；留空 = 系统默认字体
-  "font": ""
+  "font": "",
+  // 列表最大候选行数：改后立即生效（窗口高度随之自适应）
+  "resultRows": 6
 }
 ```
 
 - **font**：填你系统里任何字体名，如 `"font": "Cascadia Mono"`；留空用系统默认字体。改配置**即时生效**（`notify` 监听 + 热更新）。
+- **resultRows**：列表最多显示几行候选，窗口高度自适应；默认 6，改后**即时生效**。
 - **accelerator**：改了要重启。
 - 初始文件自带中文注释说明，像 VS Code 的 `settings.json`。
 

@@ -3,5 +3,9 @@
   "identifier": "main-capability",
   "description": "Main window capability: allow the webview to call our backend commands.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-hide"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-set-size"
+  ]
 }

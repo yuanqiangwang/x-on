@@ -16,6 +16,8 @@
         --muted: #58655c;
         /* 默认系统字体；用户可在 settings.json 的 font 字段填任意已装字体名覆盖。 */
         --font: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+        /* 单条候选行高（px），与 main.ts 的 ROW_H 同步，用于窗口高度自适应。 */
+        --row-h: 38px;
       }
       * { box-sizing: border-box; }
       html, body {
@@ -67,23 +69,16 @@
         list-style: none;
         margin: 8px 0 0;
         padding: 0;
-        overflow-y: auto;
+        /* 不滚动：候选超过 resultRows 行时直接截断，引导用户换检索词而不是滚动找。 */
+        overflow: hidden;
         flex: 1;
       }
-      /* Thin, borderless, terminal-green scrollbar — the native WinUI one breaks
-         the neon-geek look. Track stays invisible; thumb is a quiet green nub. */
-      #results::-webkit-scrollbar { width: 6px; height: 6px; }
-      #results::-webkit-scrollbar-track { background: transparent; }
-      #results::-webkit-scrollbar-thumb {
-        background: var(--accent-dim);
-        border-radius: 3px;
-      }
-      #results::-webkit-scrollbar-thumb:hover { background: var(--accent); }
-      #results::-webkit-scrollbar-corner { background: transparent; }
       #results li {
         display: flex;
         align-items: center;
         gap: 10px;
+        height: var(--row-h);
+        overflow: hidden;
         padding: 7px 10px;
         border-left: 2px solid transparent;
         border-radius: 0 4px 4px 0;
@@ -124,7 +119,13 @@
         color: var(--accent);
         text-shadow: 0 0 6px var(--accent-dim);
       }
-      #results li .comment { color: var(--muted); font-size: 11px; }
+      #results li .comment {
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
 
       /* keyboard hints footer */
       #footer {

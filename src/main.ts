@@ -1,19 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { pinyin } from "pinyin-pro";
+import { LogicalSize } from "@tauri-apps/api/dpi";
+import { AppMatcher, type AppInfo } from "./matcher";
 
-type AppInfo = {
-  name: string;
-  comment?: string | null;
-  launchPath: string;
-  targetPath: string;
-  icon?: string | null;
-};
+// 检索匹配深模块：index 重建拼音索引、search 排序返回。分层/同音抑制全藏其内部。
+const matcher = new AppMatcher();
 
 type Settings = {
   accelerator?: string;
   autostart?: boolean;
   font?: string | null;
+  resultRows?: number;
 };
 
 // UI font chain: the user-supplied font name from settings.json is prepended
@@ -35,11 +32,22 @@ function applyFont(font?: string | null) {
 
 const win = getCurrentWebviewWindow();
 const input = document.getElementById("search") as HTMLInputElement;
+// 失焦即隐藏：窗口一失去焦点（点到别处）就收起，下次 Alt+Space 再唤起。
+win.onFocusChanged(({ payload: focused }) => {
+  if (!focused) win.hide();
+});
 const list = document.getElementById("results") as HTMLUListElement;
 
 let apps: AppInfo[] = [];
 let filtered: AppInfo[] = [];
 let selected = 0;
+
+// 窗口自适配常量：单条候选行高（与 index.html 的 --row-h 同步）、空查询窗口高、
+// 结果列表上边距。CHROME/GAP 为估算，实际高度按 dev 视口校准。
+const ROW_H = 38;
+const CHROME = 90;
+const GAP = 8;
+let maxRows = 6; // 候选最大行数，来自 settings.json 的 resultRows，热更新
 
 // Cached icon data URI per launch path, or `null` once we've given up on a row.
 // `iconTries` caps the retry budget so a transient extraction failure (e.g. the
@@ -65,137 +73,12 @@ async function loadApps(force = false) {
     const cached = iconCache.get(a.launchPath);
     return cached !== undefined ? { ...a, icon: cached } : a;
   });
-  buildPinyinIndex();
+  matcher.index(apps);
   render();
 }
 
-// ---------------------------------------------------------------------------
-// Pinyin + abbreviation (fuzzy) matching.
-// Precomputed once per launch path, so typing never re-runs the converter.
-// ---------------------------------------------------------------------------
-type PinyinFields = { full: string; init: string; words: string };
-const pinyinMap = new Map<string, PinyinFields>();
-
-// CJK char ranges: Unified, Extension A, Compatibility Ideographs.
-const CJK_CLASS = `一-鿿㐀-䶿豈-﫿`;
-const CJK_RE = new RegExp(`[${CJK_CLASS}]`);
-function isCJK(ch: string): boolean {
-  return CJK_RE.test(ch);
-}
-
-// Split a name into maximal CJK / non-CJK runs so each CJK run is fed whole to
-// pinyin-pro (word-level polyphone disambiguation), while non-CJK chars stay
-// under our control.
-function computePinyin(name: string): PinyinFields {
-  const runs =
-    name.match(new RegExp(`[${CJK_CLASS}]+|[^${CJK_CLASS}]+`, "g")) ?? [name];
-
-  let full = "";
-  let init = "";
-  for (const seg of runs) {
-    if (isCJK(seg[0])) {
-      const arr = pinyin(seg, { type: "all", toneType: "none" }) as {
-        pinyin: string;
-      }[];
-      for (const it of arr) {
-        const syl = (it.pinyin || seg).toLowerCase();
-        full += syl;
-        init += syl[0] ?? "";
-      }
-    } else {
-      for (const ch of seg) {
-        if (/\s/.test(ch)) continue; // drop spaces so multi-word prefixes match cleanly
-        const lc = ch.toLowerCase();
-        full += lc;
-        init += lc;
-      }
-    }
-  }
-
-  return { full, init, words: wordInitials(name) };
-}
-
-// First letter of each whitespace-separated token (Google Chrome -> gc). Only for
-// multi-token names, so it adds no noise to single CJK words.
-function wordInitials(name: string): string {
-  const tokens = name.split(/[\s　-]+/).filter(Boolean);
-  if (tokens.length < 2) return "";
-  let out = "";
-  for (const w of tokens) {
-    const first = w[0] ?? "";
-    out += isCJK(first)
-      ? (pinyin(first, { toneType: "none" }) || first).charAt(0)
-      : first.toLowerCase();
-  }
-  return out;
-}
-
-function buildPinyinIndex() {
-  pinyinMap.clear();
-  for (const a of apps) pinyinMap.set(a.launchPath, computePinyin(a.name));
-}
-
-// Is `q` a subsequence of `s` (chars in order, gaps allowed)?
-function isSubsequence(q: string, s: string): boolean {
-  let i = 0;
-  for (const c of s) {
-    if (c === q[i]) i++;
-    if (i === q.length) return true;
-  }
-  return i === q.length;
-}
-
-// Rank an app against a query. Tiers, strongest first:
-// name exact > name prefix > full-pinyin prefix > word initials > pinyin initials
-// > name/full substring > subsequence. Within a tier, a *tighter* hit wins: the
-// query accounts for more of the actual field it matched, so a short field that
-// the query fully covers (微信 init "wx") outranks a long field it only prefixes
-// (微信开发者工具 init "wxkfzgj"). -1 never returned; use null for no match.
-function scoreMatch(a: AppInfo, t: string): { tier: number; len: number } | null {
-  const name = a.name.toLowerCase();
-  const f = pinyinMap.get(a.launchPath);
-  const full = f?.full ?? name;
-  const init = f?.init ?? "";
-  const words = f?.words ?? "";
-
-  if (name === t) return { tier: 1, len: name.length };
-  if (name.startsWith(t)) return { tier: 2, len: name.length };
-  if (full.startsWith(t)) return { tier: 3, len: full.length };
-  if (words && (words === t || words.startsWith(t))) return { tier: 4, len: words.length };
-  if (init && (init === t || init.startsWith(t))) return { tier: 5, len: init.length };
-  if (name.includes(t) || full.includes(t)) {
-    const len = Math.min(
-      name.includes(t) ? name.length : Infinity,
-      full.includes(t) ? full.length : Infinity,
-    );
-    return { tier: 6, len };
-  }
-  if (isSubsequence(t, name) || isSubsequence(t, full)) {
-    const len = Math.min(
-      isSubsequence(t, name) ? name.length : Infinity,
-      isSubsequence(t, full) ? full.length : Infinity,
-    );
-    return { tier: 7, len };
-  }
-  return null;
-}
-
-function filterApps(q: string): AppInfo[] {
-  const t = q.trim().toLowerCase();
-  if (!t) return apps;
-  const scored: { a: AppInfo; tier: number; len: number }[] = [];
-  for (const a of apps) {
-    const s = scoreMatch(a, t);
-    if (s) scored.push({ a, tier: s.tier, len: s.len });
-  }
-  // Tighter match first, then shorter matched field; stable so equal pairs keep
-  // index order.
-  scored.sort((x, y) => x.tier - y.tier || x.len - y.len);
-  return scored.map((s) => s.a);
-}
-
 function render() {
-  filtered = filterApps(input.value);
+  filtered = matcher.search(input.value);
   if (selected >= filtered.length) selected = Math.max(0, filtered.length - 1);
 
   list.textContent = "";
@@ -231,6 +114,14 @@ function render() {
   active?.scrollIntoView({ block: "nearest" });
 
   loadMissingIcons(filtered);
+
+  // 窗口高度自适应：空查询 = 只显示输入行；有结果 = 输入行 + 可见候选行数。
+  const hasQuery = input.value.trim().length > 0;
+  list.style.display = hasQuery ? "block" : "none";
+  const rows = hasQuery ? Math.min(filtered.length, maxRows) : 0;
+  // 每次都 setSize（不缓存）：show 会按 config 尺寸重置窗口，每次 render 强制贴回内容高度。
+  const height = CHROME + (hasQuery ? GAP + rows * ROW_H : 0);
+  win.setSize(new LogicalSize(640, height)).catch(() => {});
 }
 
 function avatarEl(a: AppInfo): HTMLElement {
@@ -350,6 +241,10 @@ win.listen("index-updated", () => loadApps(false));
 // Hot-apply a font change the user made in settings.json (backend watches it).
 win.listen<Settings>("settings-changed", (e) => {
   applyFont(e.payload.font);
+  if (typeof e.payload.resultRows === "number" && e.payload.resultRows > 0) {
+    maxRows = Math.floor(e.payload.resultRows);
+    render(); // 行数变化，重新 fit 窗口
+  }
 });
 
 input.addEventListener("focus", render);
@@ -358,6 +253,9 @@ input.addEventListener("focus", render);
   try {
     const settings = await invoke<Settings>("get_config");
     applyFont(settings.font);
+    if (typeof settings.resultRows === "number" && settings.resultRows > 0) {
+      maxRows = Math.floor(settings.resultRows);
+    }
   } catch (e) {
     console.error(e);
   }
