@@ -5510,28 +5510,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "x-on"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "image",
- "json5",
- "lnk",
- "notify",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-dialog",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "walkdir",
- "windows 0.58.0",
-]
-
-[[package]]
 name = "x11"
 version = "2.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5574,6 +5552,28 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+
+[[package]]
+name = "xon"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "image",
+ "json5",
+ "lnk",
+ "notify",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-dialog",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "walkdir",
+ "windows 0.58.0",
+]
 
 [[package]]
 name = "yoke"

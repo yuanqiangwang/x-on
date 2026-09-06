@@ -1,5 +1,5 @@
 [package]
-name = "x-on"
+name = "xon"
 version = "0.1.0"
 description = "x-on — 极速启动器"
 authors = ["x-on"]

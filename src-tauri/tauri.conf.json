@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "x-on",
+  "productName": "xon",
   "version": "0.1.0",
   "identifier": "com.xon.launcher",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "x-on",
+        "title": "xon",
         "width": 640,
         "height": 400,
         "resizable": false,
