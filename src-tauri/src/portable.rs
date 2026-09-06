@@ -53,6 +53,14 @@ pub fn save_manifest(app: &AppHandle, m: &PortableManifest) -> Result<(), String
     std::fs::write(&path, text).map_err(|e| e.to_string())
 }
 
+/// True when `path` is a registered portable exe (present in the manifest). The
+/// type-level way to ask "is this portable" — not a heuristic on the launch path's
+/// suffix, so a `.lnk` whose target happens to be an `.exe` still launches as a
+/// shortcut.
+pub fn is_known_portable(app: &AppHandle, path: &str) -> bool {
+    load_manifest(app).apps.iter().any(|e| e.path == path)
+}
+
 /// The exe's file stem, minus `.exe` — the last-resort display name.
 pub fn file_stem(path: &str) -> String {
     Path::new(path)

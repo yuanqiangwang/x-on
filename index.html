@@ -5,13 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>x-on</title>
     <style>
-      /* 霞鹜文楷屏显版 GB, 打包进前端资源随应用分发 (SIL OFL-1.1)。 */
-      @font-face {
-        font-family: "LXGW WenKai GB Screen";
-        src: url("/fonts/LXGWWenKaiGBScreen.woff2") format("woff2");
-        font-weight: normal;
-        font-display: swap;
-      }
       :root {
         --bg: #05060a;
         --border: #122019;
@@ -21,8 +14,8 @@
         --text: #d7e9dd;
         --text-head: #eefbe6;
         --muted: #58655c;
-        --font: "LXGW WenKai GB Screen", "LXGW WenKai", "PingFang SC",
-          "Microsoft YaHei", system-ui, sans-serif;
+        /* 默认系统字体；用户可在 settings.json 的 font 字段填任意已装字体名覆盖。 */
+        --font: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
       }
       * { box-sizing: border-box; }
       html, body {

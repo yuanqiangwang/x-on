@@ -17,10 +17,10 @@ type Settings = {
 };
 
 // UI font chain: the user-supplied font name from settings.json is prepended
-// (VS Code editor.fontFamily style); empty falls back to the bundled LXGW WenKai
-// default in index.html's :root --font. Kept in sync with that value.
+// (VS Code editor.fontFamily style); empty falls back to the system-font default
+// in index.html's :root --font. Kept in sync with that value.
 const FALLBACK_FONT_CHAIN =
-  '"LXGW WenKai GB Screen", "LXGW WenKai", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
+  '"Microsoft YaHei", "Segoe UI", system-ui, sans-serif';
 
 function applyFont(font?: string | null) {
   const docStyle = document.documentElement.style;
@@ -28,7 +28,7 @@ function applyFont(font?: string | null) {
   if (name) {
     docStyle.setProperty("--font", `"${name}", ${FALLBACK_FONT_CHAIN}`);
   } else {
-    // Empty => let the :root default (bundled LXGW WenKai) apply.
+    // Empty => let the :root default (system font) apply.
     docStyle.removeProperty("--font");
   }
 }
@@ -55,7 +55,16 @@ const MAX_ICON_TRIES = 3;
 async function loadApps(force = false) {
   const cmd = force ? "rescan" : "scan_apps";
   const data = await invoke<AppInfo[]>(cmd);
-  apps = data ?? [];
+  // Backend rows always come back with `icon` unset, so re-apply any icon or
+  // permanent-miss we already cached for this launch path. Otherwise a rescan
+  // (tray "rescan", index-updated, Start-Menu watcher) swaps in fresh objects
+  // whose `icon` is undefined and every avatar collapses to a letter until some
+  // *miss* happens to retrigger extraction. Cached hits return instantly, so the
+  // icons only flicker if they were never successfully extracted.
+  apps = (data ?? []).map((a) => {
+    const cached = iconCache.get(a.launchPath);
+    return cached !== undefined ? { ...a, icon: cached } : a;
+  });
   buildPinyinIndex();
   render();
 }
@@ -335,7 +344,8 @@ win.listen("wake", () => {
 });
 
 // Reload the index when it changes underneath us (tray portable add/remove, rescan).
-win.listen("index-updated", () => loadApps(true));
+// The index was already rebuilt in the backend; just re-read the fresh snapshot.
+win.listen("index-updated", () => loadApps(false));
 
 // Hot-apply a font change the user made in settings.json (backend watches it).
 win.listen<Settings>("settings-changed", (e) => {

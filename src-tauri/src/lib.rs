@@ -61,6 +61,14 @@ struct Index {
     apps: Mutex<Vec<AppInfo>>,
 }
 
+impl Index {
+    /// Replace the whole index atomically. The index is always a complete
+    /// snapshot — never a partial one — so every rebuild funnels through here.
+    fn reload(&self, apps: Vec<AppInfo>) {
+        *self.apps.lock().unwrap() = apps;
+    }
+}
+
 /// The tray icon, held so we can swap its menu (the portable submenu changes) via
 /// `set_menu` instead of building a second icon.
 #[derive(Default)]
@@ -86,6 +94,16 @@ struct ConfigWatcher {
 /// when the config actually changed (avoiding redundant enable/disable per save).
 #[derive(Default)]
 struct AppliedAutostart(Mutex<Option<bool>>);
+
+/// The index filesystem watcher. Held in state (not a bare local) so `add_portable`
+/// can extend it at runtime into the newly-registered exe's folder, and so the
+/// watcher callback can tell whether a change is relevant without re-reading the
+/// manifest. `dirs` is the set of folders already watched.
+#[derive(Default)]
+struct IndexWatcher {
+    watcher: Mutex<Option<Box<dyn notify::Watcher + Send>>>,
+    dirs: Mutex<HashSet<PathBuf>>,
+}
 
 /// An entry in the launcher index — a single launchable app.
 ///
@@ -115,8 +133,8 @@ struct Config {
     #[serde(default)]
     autostart: bool,
     /// UI font family, mirroring VS Code's editor.fontFamily: a system font name
-    /// the user types into settings.json. Empty means the bundled LXGW WenKai
-    /// default. Only `font` is hot-applied when the file is watched.
+    /// the user types into settings.json. Empty means the system default. Only
+    /// `font` is hot-applied when the file is watched.
     #[serde(default)]
     font: String,
 }
@@ -173,35 +191,36 @@ fn load_config(app: &AppHandle) -> Config {
 /// Persist the launcher config back to `settings.json` in the app config dir.
 /// Records the written text so the notifications it triggers on itself are
 /// recognized as own-writes and dropped (see `apply_settings`).
-fn save_config(app: &AppHandle, cfg: &Config) -> Result<(), String> {
+/// Write `text` to settings.json and record it as our own write, so the watchdog
+/// skips the notification it causes. Every writer funnels through here so the
+/// "did we cause this change" bookkeeping lives in one place.
+fn persist_settings(app: &AppHandle, text: &str) -> Result<(), String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let file = dir.join("settings.json");
-    let text = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     if let Some(state) = app.try_state::<ConfigWatcher>() {
-        *state.own_write.lock().unwrap() = Some(text.clone());
+        *state.own_write.lock().unwrap() = Some(text.to_string());
     }
     std::fs::write(&file, text).map_err(|e| e.to_string())
+}
+
+fn save_config(app: &AppHandle, cfg: &Config) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    persist_settings(app, &text)
 }
 
 /// Write the initial settings.json with explanatory comments (VS Code-style JSONC)
 /// so a first-time user sees what each field means and which needs a restart.
 fn write_default_settings_template(app: &AppHandle) -> Result<(), String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let file = dir.join("settings.json");
     let template = r#"{
   // 全局唤醒快捷键，改后需重启生效（只在启动时注册）
   "accelerator": "Alt+Space",
   // 开机自启：改后立即生效（写入/删除系统自启项）
   "autostart": false,
-  // 界面字体：系统已安装字体名，改后立即生效；留空 = 内置霞鹜文楷
+  // 界面字体：系统已安装字体名，改后立即生效；留空 = 系统默认字体
   "font": ""
 }"#;
-    if let Some(state) = app.try_state::<ConfigWatcher>() {
-        *state.own_write.lock().unwrap() = Some(template.to_string());
-    }
-    std::fs::write(&file, template).map_err(|e| e.to_string())
+    persist_settings(app, template)
 }
 
 /// The two start-menu roots we crawl: per-user and shared.
@@ -250,6 +269,38 @@ fn is_junk(name: &str, target_path: &str) -> bool {
     JUNK_KEYWORDS.iter().any(|k| hay.contains(k))
 }
 
+/// True when a shortcut's target still looks like a live local resource.
+/// "Invalid" means the target parses to a *local absolute path* that no longer
+/// exists on disk. Deliberately NOT dropped (return true):
+///   - empty target (link_target() failed) — the .lnk may still launch;
+///   - UNC / network-share paths (\\server\share, //server/share) — a local
+///     existence check would be slow and flaky (offline == falsely missing);
+///   - relative / no-drive paths (incl. %ENV%) — Shell expands these;
+///   - shell-namespace items (::{CLSID}) — exist only in the Shell namespace.
+fn link_is_valid(target: &str) -> bool {
+    if target.is_empty() {
+        return true;
+    }
+    // UNC / network, or the extended-length prefix \\?\ (local but no drive):
+    // treat as unresolvable-here → keep. (starts_with("\\\\") covers "\\?\C:\")
+    if target.starts_with("\\\\") || target.starts_with("//") {
+        return true;
+    }
+    let p = Path::new(target);
+    // No drive/root (relative, or %ENV%\…) → Shell resolves it → keep.
+    if p.is_relative() {
+        return true;
+    }
+    p.exists()
+}
+
+/// True when a Start-Menu shortcut should not be indexed: install/uninstall noise,
+/// or its local target no longer exists (宽松：网络 / 解析失败 / 相对路径保留，见
+/// link_is_valid). One named place for the drop policy of a start-menu entry.
+fn drop_shortcut(a: &AppInfo) -> bool {
+    is_junk(&a.name, &a.target_path) || !link_is_valid(&a.target_path)
+}
+
 fn build_index(app: &AppHandle) -> Vec<AppInfo> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut apps = Vec::new();
@@ -271,8 +322,9 @@ fn build_index(app: &AppHandle) -> Vec<AppInfo> {
                 continue;
             }
             let app = parse_lnk(entry.path());
-            // Drop uninstallers / help & updater noise at the source.
-            if is_junk(&app.name, &app.target_path) {
+            // Drop shortcuts that are install/uninstall noise, or whose local
+            // target no longer exists (see drop_shortcut).
+            if drop_shortcut(&app) {
                 continue;
             }
             // Dedupe by resolved target: keep the first shortcut for a program.
@@ -288,6 +340,11 @@ fn build_index(app: &AppHandle) -> Vec<AppInfo> {
     let mut seen_portable: HashSet<String> = HashSet::new();
     for e in &load_manifest(app).apps {
         if !seen_portable.insert(e.path.clone()) {
+            continue;
+        }
+        // 便携 .exe 已被删除 → 不呈现。只拦索引、不改 manifest，用户仍能
+        // 在托盘「移除便携应用」里看到并主动摘除。
+        if !link_is_valid(&e.path) {
             continue;
         }
         apps.push(parse_portable(e));
@@ -351,15 +408,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<TrayIcon<tauri::Wry>> {
                 "open-config" => open_config(app),
                 "rescan" => {
                     let handle = app.clone();
-                    std::thread::spawn(move || {
-                        let apps = build_index(&handle);
-                        if let Some(state) = handle.try_state::<Index>() {
-                            if let Ok(mut guard) = state.apps.lock() {
-                                *guard = apps;
-                            }
-                        }
-                        let _ = handle.emit("index-updated", ());
-                    });
+                    std::thread::spawn(move || rebuild_index(&handle));
                 }
                 "quit" => app.exit(0),
                 _ => {
@@ -415,17 +464,22 @@ fn refresh_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Rebuild the index + tray submenu, then tell the frontend to reload. Called after
-/// any portable add/remove (the manifest already hit disk).
-fn refresh_after_change(app: &AppHandle) {
+/// Rebuild the in-memory index from disk, then tell the frontend to reload.
+/// The single owner of "rebuild + notify": the tray rescan, the Start-Menu /
+/// portable watcher and portable add/remove all funnel through here.
+fn rebuild_index(app: &AppHandle) {
     let apps = build_index(app);
     if let Some(state) = app.try_state::<Index>() {
-        if let Ok(mut guard) = state.apps.lock() {
-            *guard = apps;
-        }
+        state.reload(apps);
     }
-    let _ = refresh_tray(app);
     let _ = app.emit("index-updated", ());
+}
+
+/// Rebuild the index + tray submenu, then tell the frontend to reload. Called
+/// after any portable add/remove (the manifest already hit disk).
+fn refresh_after_change(app: &AppHandle) {
+    rebuild_index(app);
+    let _ = refresh_tray(app);
 }
 
 /// Tray action: pick a `.exe`, append it to the manifest, and refresh.
@@ -442,8 +496,10 @@ fn add_portable(app: &AppHandle) {
             if m.apps.iter().any(|e| e.path == path_str) {
                 return;
             }
-            m.apps.push(PortableEntry { path: path_str, name: None });
+            m.apps.push(PortableEntry { path: path_str.clone(), name: None });
             if save_manifest(&handle, &m).is_ok() {
+                // Watch the new exe's folder so deleting the file hides it live.
+                ensure_watch(&handle, &path_str);
                 refresh_after_change(&handle);
             }
         });
@@ -563,6 +619,143 @@ fn watch_config(app: &AppHandle) -> notify::Result<()> {
     Ok(())
 }
 
+/// Watch the Start-Menu roots so shortcuts that installers/uninstallers add or
+/// remove refresh the index automatically — no manual rescan or restart. Runs
+/// forever on its own thread; kept alive by the parking loop below.
+/// True when a change to `paths` should rebuild the index: a `.lnk` (start-menu
+/// install/uninstall) or anything inside a portable exe's own folder. A portable
+/// parent is watched non-recursively, precisely so we catch the exe being deleted
+/// or renamed.
+fn index_change_relevant(app: &AppHandle, paths: &[PathBuf]) -> bool {
+    if paths.iter().any(|p| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
+    }) {
+        return true;
+    }
+    let Some(state) = app.try_state::<IndexWatcher>() else {
+        return false;
+    };
+    let dirs = state.dirs.lock().unwrap();
+    paths
+        .iter()
+        .any(|p| p.parent().is_some_and(|parent| dirs.contains(parent)))
+}
+
+/// Collapse a stream of notifications into a single `fire` callback after a quiet
+/// window — installers write a batch of `.lnk` files in a burst, so we wait for the
+/// stream to go quiet before rescanning once per install, not per file. Feed events
+/// through the returned sender; `run` on its own thread.
+struct Debouncer<F: Fn()> {
+    rx: std::sync::mpsc::Receiver<()>,
+    quiet: std::time::Duration,
+    fire: F,
+}
+
+impl<F: Fn()> Debouncer<F> {
+    fn run(self) {
+        while self.rx.recv().is_ok() {
+            while self.rx.recv_timeout(self.quiet).is_ok() {}
+            (self.fire)();
+        }
+    }
+}
+
+/// Watch the Start-Menu roots (recursive) plus every registered portable exe's
+/// folder (non-recursive), so installs/uninstalls and portable exe-deletions all
+/// refresh the index live. Stored in `IndexWatcher` state so `add_portable` can
+/// extend it at runtime via `ensure_watch`.
+fn watch_index_changes(app: &AppHandle) -> notify::Result<()> {
+    use notify::RecursiveMode;
+
+    let menu_roots: HashSet<PathBuf> =
+        start_menu_roots().into_iter().filter(|r| r.exists()).collect();
+    let portable_dirs: HashSet<PathBuf> = load_manifest(app)
+        .apps
+        .iter()
+        .filter_map(|e| Path::new(&e.path).parent().map(|p| p.to_path_buf()))
+        .filter(|p| p.exists())
+        .collect();
+
+    // The watcher reports into a channel; a debounce thread drains it and
+    // rebuilds once per burst. Each consumer gets its own AppHandle clone.
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let watcher_handle = app.clone();
+    let mut watcher: Box<dyn notify::Watcher + Send> = Box::new(
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            let Ok(event) = res else { return; };
+            if index_change_relevant(&watcher_handle, &event.paths) {
+                let _ = tx.send(());
+            }
+        })?,
+    );
+
+    let mut dirs: HashSet<PathBuf> = HashSet::new();
+    for root in &menu_roots {
+        watcher.watch(root, RecursiveMode::Recursive)?;
+        dirs.insert(root.clone());
+    }
+    for d in &portable_dirs {
+        if menu_roots.contains(d) {
+            continue; // already watched recursively
+        }
+        watcher.watch(d, RecursiveMode::NonRecursive)?;
+        dirs.insert(d.clone());
+    }
+
+    // Keep the watcher even when the current set is empty, so `add_portable` can
+    // extend it later through `ensure_watch`.
+    if let Some(state) = app.try_state::<IndexWatcher>() {
+        *state.watcher.lock().unwrap() = Some(watcher);
+        *state.dirs.lock().unwrap() = dirs;
+    }
+
+    // Debounce: an installer writes a batch of .lnk files in a burst. The
+    // Debouncer collapses them into one rebuild after a quiet window.
+    let debouncer = Debouncer {
+        rx,
+        quiet: std::time::Duration::from_millis(400),
+        fire: {
+            let handle = app.clone();
+            move || rebuild_index(&handle)
+        },
+    };
+    std::thread::spawn(move || debouncer.run());
+
+    // Watcher lives in state (app-lifetime), so this thread may return.
+    Ok(())
+}
+
+/// Extend the index watcher into a portable exe's folder so removing the exe hides
+/// it. Idempotent: no-op when that folder is already watched (including when it IS
+/// a start-menu root, which is already recursive).
+fn ensure_watch(app: &AppHandle, exe: &str) {
+    let Some(state) = app.try_state::<IndexWatcher>() else {
+        return;
+    };
+    let Some(parent) = Path::new(exe).parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    if !parent.exists() {
+        return;
+    }
+    {
+        let dirs = state.dirs.lock().unwrap();
+        if dirs.contains(&parent) {
+            return;
+        }
+    }
+    // Watch outside the dirs lock so we never nest two Mutexes.
+    let mut guard = state.watcher.lock().unwrap();
+    if let Some(w) = guard.as_mut() {
+        if w.watch(&parent, notify::RecursiveMode::NonRecursive).is_ok() {
+            drop(guard); // release the watch guard before taking dirs
+            state.dirs.lock().unwrap().insert(parent);
+        }
+    }
+}
+
 /// Current launcher config; the frontend reads `font` (and peers) at load and
 /// again on every settings-changed event.
 #[tauri::command]
@@ -578,9 +771,7 @@ fn scan_apps(state: State<Index>) -> Vec<AppInfo> {
 #[tauri::command]
 fn rescan(app: AppHandle, state: State<Index>) -> Vec<AppInfo> {
     let apps = build_index(&app);
-    if let Ok(mut guard) = state.apps.lock() {
-        *guard = apps.clone();
-    }
+    state.reload(apps.clone());
     apps
 }
 
@@ -591,14 +782,9 @@ fn rescan(app: AppHandle, state: State<Index>) -> Vec<AppInfo> {
 fn launch_app(app: AppHandle, app_path: String) -> Result<(), String> {
     // A portable app is launched as its raw `.exe` with the working directory set
     // to the exe's folder; a Start-Menu entry is a `.lnk` launched through the
-    // opener so it keeps the shortcut's own args/working dir. The extension tells
-    // them apart (a Start-Menu entry's launch_path is always the `.lnk`).
-    let is_exe = Path::new(&app_path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("exe"));
-
-    if is_exe {
+    // opener so it keeps the shortcut's own args/working dir. Which one it is is
+    // decided by the portable manifest, not by the launch path's suffix.
+    if portable::is_known_portable(&app, &app_path) {
         launch_portable(&app_path)?;
     } else if let Err(e) = app.opener().open_path(app_path.as_str(), None::<&str>) {
         return Err(e.to_string());
@@ -640,11 +826,12 @@ async fn get_app_icons(
         let fresh = tauri::async_runtime::spawn_blocking(move || {
             let mut got: HashMap<String, Option<String>> = HashMap::new();
             for p in &missing {
-                let val = match icons::icon_data_uri(p) {
-                    Ok(v) => v,
-                    Err(_) => None,
-                };
-                got.insert(p.clone(), val);
+                // Only successes get cached. A miss stays uncached so the frontend's
+                // retry budget can re-extract once the shell icon cache has warmed —
+                // caching a permanent None here would defeat that retry.
+                if let Ok(v) = icons::icon_data_uri(p) {
+                    got.insert(p.clone(), v);
+                }
             }
             if let Ok(mut guard) = cache.lock() {
                 for (k, v) in &got {
@@ -682,6 +869,7 @@ pub fn run() {
         .manage(IconCache::default())
         .manage(ConfigWatcher::default())
         .manage(AppliedAutostart::default())
+        .manage(IndexWatcher::default())
         .invoke_handler(tauri::generate_handler![
             scan_apps,
             rescan,
@@ -721,13 +909,20 @@ pub fn run() {
                 }
             });
 
+            // Watch Start-Menu + portable folders so installs/removes refresh
+            // the index live.
+            std::thread::spawn({
+                let handle = handle.clone();
+                move || {
+                    let _ = watch_index_changes(&handle);
+                }
+            });
+
             // Async initial scan so first activation is instant.
             std::thread::spawn(move || {
                 let apps = build_index(&handle);
                 if let Some(state) = handle.try_state::<Index>() {
-                    if let Ok(mut guard) = state.apps.lock() {
-                        *guard = apps;
-                    }
+                    state.reload(apps);
                 }
             });
 

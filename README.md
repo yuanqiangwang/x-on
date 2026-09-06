@@ -30,7 +30,7 @@ x-on 按 `名称精确 > 前缀 > 全拼 > 首字母 > 子串 > 子序列` 分�
 | ⚡ 亚秒唤起 | `Alt+Space` 全局快捷键，单实例，窗口常驻 |
 | 🧠 拼音模糊 | 全拼 / 首字母 / 子序列，CJK 感知 |
 | 🖼 原生图标 | `SHGetFileInfoW` + GDI 即时提取，非截图、非缓存假象 |
-| 🎨 neon-geek | 终端绿 + 近黑，内置霞鹜文楷屏显版 |
+| 🎨 neon-geek | 终端绿 + 近黑，默认系统字体 |
 | ⚙️ 配置即一切 | 单一 `settings.json`（JSONC，可写注释），font / autostart 热更新 |
 | 🧩 便携应用 | 把任意 `.exe` 塞进索引（托盘右键即可） |
 | 🔍 自动索引 | 扫描开始菜单 `.lnk` + 便携清单，开机后台重建 |
@@ -56,12 +56,12 @@ npm run tauri build    # 构建 release（产物在 src-tauri/target/release/）
   "accelerator": "Alt+Space",
   // 开机自启：改后立即生效（写入/删除系统自启项）
   "autostart": false,
-  // 界面字体：系统已安装字体名，改后立即生效；留空 = 内置霞鹜文楷
+  // 界面字体：系统已安装字体名，改后立即生效；留空 = 系统默认字体
   "font": ""
 }
 ```
 
-- **font**：填你系统里任何字体名，如 `"font": "Cascadia Mono"`；留空用内置霞鹜文楷。改配置**即时生效**（`notify` 监听 + 热更新）。
+- **font**：填你系统里任何字体名，如 `"font": "Cascadia Mono"`；留空用系统默认字体。改配置**即时生效**（`notify` 监听 + 热更新）。
 - **accelerator**：改了要重启。
 - 初始文件自带中文注释说明，像 VS Code 的 `settings.json`。
 
@@ -74,7 +74,5 @@ npm run tauri build    # 构建 release（产物在 src-tauri/target/release/）
 - 热配置：`notify` 监听 `settings.json` → `emit settings-changed` → 前端换 CSS 变量
 
 ## 许可
-
-- 内置字体 **霞鹜文楷**（屏显版 GB）：[SIL Open Font License 1.1](public/fonts/OFL.txt)
 
 > 启动器是用来消失的。最成功的启动器，你永远感觉不到它。
