@@ -4,151 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>xon</title>
-    <style>
-      :root {
-        --bg: #05060a;
-        --border: #122019;
-        --accent: #3dff9e;
-        --accent-dim: rgba(61, 255, 158, 0.35);
-        --accent-faint: rgba(61, 255, 158, 0.10);
-        --text: #d7e9dd;
-        --text-head: #eefbe6;
-        --muted: #58655c;
-        /* 默认系统字体；用户可在 settings.json 的 font 字段填任意已装字体名覆盖。 */
-        --font: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
-        /* 单条候选行高（px），与 main.ts 的 ROW_H 同步，用于窗口高度自适应。 */
-        --row-h: 38px;
-      }
-      * { box-sizing: border-box; }
-      html, body {
-        margin: 0;
-        height: 100%;
-        background: #05060a;
-        color: var(--text);
-        font-family: var(--font);
-        font-variant-ligatures: none;
-      }
-      /* Neon-geek launcher: near-black + terminal green. Opaque, flat — no glass,
-         no gradient washes. The "neon" comes only from the accent highlight. */
-      #app {
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        padding: 12px 14px 8px;
-      }
-
-      /* Terminal prompt row: a green › with the raw search field underneath. */
-      #searchrow {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding-bottom: 9px;
-        border-bottom: 1px solid var(--accent);
-        box-shadow: 0 1px 0 0 rgba(61, 255, 158, 0.06);
-      }
-      #searchrow .mark {
-        color: var(--accent);
-        font-size: 18px;
-        text-shadow: 0 0 8px var(--accent-dim);
-        user-select: none;
-      }
-      #search {
-        flex: 1;
-        padding: 4px 0;
-        font: inherit;
-        font-size: 18px;
-        color: var(--accent);
-        caret-color: var(--accent);
-        background: transparent;
-        border: none;
-        outline: none;
-      }
-      #search::placeholder { color: var(--muted); }
-
-      #results {
-        list-style: none;
-        margin: 8px 0 0;
-        padding: 0;
-        /* 不滚动：候选超过 resultRows 行时直接截断，引导用户换检索词而不是滚动找。 */
-        overflow: hidden;
-        flex: 1;
-      }
-      #results li {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        height: var(--row-h);
-        overflow: hidden;
-        padding: 7px 10px;
-        border-left: 2px solid transparent;
-        border-radius: 0 4px 4px 0;
-        color: var(--text);
-      }
-      #results li.active {
-        background: var(--accent-faint);
-        border-left-color: var(--accent);
-      }
-      #results li img,
-      #results li .avatar {
-        width: 24px;
-        height: 24px;
-        border-radius: 4px;
-        flex: 0 0 24px;
-        object-fit: contain;
-        border: 1px solid var(--border);
-        background: transparent;
-      }
-      #results li .avatar {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: var(--accent);
-        font-weight: 700;
-        font-family: var(--font);
-      }
-      /* 系统功能项：用彩色 emoji 代替通用文档图标。Segoe UI Emoji 负责彩色渲染，
-         放大到接近 24px 满格、line-height 1 不撑高、color inherit 不把 emoji 染成绿色。 */
-      #results li .avatar.emoji {
-        font-family: "Segoe UI Emoji", var(--font);
-        font-size: 20px;
-        line-height: 1;
-        color: inherit;
-        font-weight: 400;
-      }
-      #results li .meta { display: flex; flex-direction: column; min-width: 0; }
-      #results li .name {
-        color: var(--text-head);
-        font-size: 14px;
-        line-height: 1.25;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      #results li.active .name {
-        color: var(--accent);
-        text-shadow: 0 0 6px var(--accent-dim);
-      }
-      #results li .comment {
-        color: var(--muted);
-        font-size: 11px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      /* keyboard hints footer */
-      #footer {
-        margin-top: 8px;
-        padding-top: 6px;
-        border-top: 1px solid var(--border);
-        color: var(--muted);
-        font-size: 11px;
-        text-align: center;
-        letter-spacing: 0.04em;
-        user-select: none;
-      }
-      #footer b { color: var(--accent); font-weight: 400; }
-    </style>
+    <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="app">
@@ -158,9 +14,16 @@
       </div>
       <ul id="results"></ul>
       <div id="footer">
-        <b>↑↓</b> 选择 &nbsp; <b>↵</b> 启动 &nbsp; <b>Esc</b> 隐藏 &nbsp; <b>Alt+Space</b> 唤出
+        <span><b>↑↓</b> 选择</span>
+        <span><b>↵</b> 启动</span>
+        <span><b>Ctrl+↵</b> 管理员</span>
+        <span><b>Alt+序号</b> 速启</span>
+        <span><b>Esc</b> 隐藏</span>
+        <span><b>Alt+Space</b> 唤出</span>
       </div>
     </div>
+    <div id="ctxmenu" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
+

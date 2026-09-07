@@ -91,8 +91,10 @@ pub fn parse_portable(e: &PortableEntry) -> crate::AppInfo {
 /// Launch a portable exe with its working directory set to the exe's own folder.
 /// Uses `ShellExecuteW(lpDirectory = folder)` so it keeps shell semantics (verb,
 /// elevation) the same way the `.lnk` path does, but with the right cwd.
+/// `as_admin` swaps the verb for `runas` (UAC prompt) — the cwd rule is unchanged,
+/// portables read config/plugins relative to it either way.
 #[cfg(windows)]
-pub fn launch_portable(path: &str) -> Result<(), String> {
+pub fn launch_portable(path: &str, as_admin: bool) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows::core::PCWSTR;
@@ -112,7 +114,7 @@ pub fn launch_portable(path: &str) -> Result<(), String> {
         .map(|p| wide_str(&p.to_string_lossy()))
         .unwrap_or_default();
 
-    let op = wide_str("open");
+    let op = wide_str(if as_admin { "runas" } else { "open" });
     let ret: HINSTANCE = unsafe {
         ShellExecuteW(
             HWND::default(),
@@ -132,7 +134,7 @@ pub fn launch_portable(path: &str) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-pub fn launch_portable(_path: &str) -> Result<(), String> {
+pub fn launch_portable(_path: &str, _as_admin: bool) -> Result<(), String> {
     Ok(())
 }
 

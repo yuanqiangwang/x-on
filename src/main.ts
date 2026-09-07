@@ -67,6 +67,7 @@ win.onFocusChanged(({ payload: focused }) => {
   if (!focused) win.hide();
 });
 const list = document.getElementById("results") as HTMLUListElement;
+const ctxMenu = document.getElementById("ctxmenu") as HTMLDivElement;
 
 let apps: AppInfo[] = [];
 let filtered: AppInfo[] = [];
@@ -74,8 +75,10 @@ let selected = 0;
 
 // 窗口自适配常量：单条候选行高（与 index.html 的 --row-h 同步）、空查询窗口高、
 // 结果列表上边距。CHROME/GAP 为估算，实际高度按 dev 视口校准。
+// ⚠️ CHROME 承载了 index.html 里全部竖向间距（app padding、搜索行 padding-bottom、
+// footer 的 margin/padding）：改那些值必须同步改这里。
 const ROW_H = 38;
-const CHROME = 90;
+const CHROME = 91;
 const GAP = 8;
 let maxRows = 6; // 候选最大行数，来自 settings.json 的 resultRows，热更新
 
@@ -107,6 +110,76 @@ async function loadApps(force = false) {
   render();
 }
 
+/** 只切换选中态高亮，不整表重绘——鼠标划过时逐行 render 会抖，且白跑一轮图标加载。 */
+function setActive(i: number) {
+  if (i === selected) return;
+  selected = i;
+  Array.from(list.children).forEach((el, idx) => {
+    el.classList.toggle("active", idx === i);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 右键菜单：只有两项 —— 「以管理员身份运行」「打开文件所在的位置」。
+// 系统功能项（ms-settings: / ::{CLSID}）不是磁盘上的文件：提权会被后端忽略，位置也
+// 无从打开，所以这类行不弹菜单，而不是弹一个点了没反应的菜单。
+// ---------------------------------------------------------------------------
+
+/**
+ * "打开所在的位置"的目标：优先快捷方式解析出的真实目标（想看的是程序装在哪，而不是
+ * 快捷方式放在哪），不可信时回退到条目自身（`.lnk` / 便携 exe）。
+ *
+ * 不可信 = 解析出的目标含非 ASCII：`lnk` crate 按 WINDOWS-1252 解码目标，中文安装路径
+ * 会解成乱码（后端 `link_is_valid` 有同样说明），拿它去 Explorer 定位必然落空；而
+ * `.lnk` 自身路径来自文件系统、便携路径来自 manifest，都是真 UTF-8。
+ */
+function revealPath(a: AppInfo): string | null {
+  const target = (a.targetPath || "").trim();
+  const trustworthy = /^[\x20-\x7e]*$/.test(target) && !isSystemUri(target);
+  const p = (trustworthy && target ? target : a.launchPath).trim();
+  return p && !isSystemUri(p) ? p : null;
+}
+
+function openContextMenu(a: AppInfo, x: number, y: number) {
+  const items: { label: string; run: () => void }[] = [];
+  if (!isSystemUri(a.launchPath)) {
+    items.push({ label: "以管理员身份运行", run: () => launch(a, true) });
+    const target = revealPath(a);
+    if (target) {
+      items.push({
+        label: "打开文件所在的位置",
+        run: () =>
+          invoke("reveal_in_explorer", { path: target }).catch((e) => console.error(e)),
+      });
+    }
+  }
+  if (items.length === 0) return;
+
+  ctxMenu.textContent = "";
+  for (const it of items) {
+    const el = document.createElement("div");
+    el.className = "item";
+    el.textContent = it.label;
+    el.addEventListener("click", () => {
+      closeContextMenu();
+      it.run();
+    });
+    ctxMenu.appendChild(el);
+  }
+
+  ctxMenu.hidden = false;
+  // 贴着光标，但不越出窗口（窗口 640 宽、高度按结果自适应）。
+  const box = ctxMenu.getBoundingClientRect();
+  ctxMenu.style.left = `${Math.max(6, Math.min(x, window.innerWidth - box.width - 6))}px`;
+  ctxMenu.style.top = `${Math.max(6, Math.min(y, window.innerHeight - box.height - 6))}px`;
+}
+
+function closeContextMenu() {
+  if (ctxMenu.hidden) return;
+  ctxMenu.hidden = true;
+  ctxMenu.textContent = "";
+}
+
 function render() {
   filtered = matcher.search(input.value);
   if (selected >= filtered.length) selected = Math.max(0, filtered.length - 1);
@@ -115,6 +188,13 @@ function render() {
   filtered.forEach((a, i) => {
     const li = document.createElement("li");
     li.className = i === selected ? "active" : "";
+
+    // 序号：与 Alt+数字 直接对应（1..9，0 = 第 10 项）。超出十项仍按真实序号显示，
+    // 只是没有对应的单键可敲。
+    const idx = document.createElement("span");
+    idx.className = "idx";
+    idx.textContent = String(i + 1);
+    li.appendChild(idx);
 
     li.appendChild(avatarEl(a));
 
@@ -132,9 +212,14 @@ function render() {
     }
     li.appendChild(meta);
 
-    li.addEventListener("click", () => {
-      selected = i;
-      render();
+    // 点击即启动（此前只选中）。悬停同步键盘选中态，"指到某项再回车"才不跳回第一项。
+    li.addEventListener("click", () => launch(a));
+    li.addEventListener("mouseenter", () => setActive(i));
+    // 右键：屏蔽 webview 自带菜单，换成只含两项的自绘菜单。
+    li.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      setActive(i);
+      openContextMenu(a, e.clientX, e.clientY);
     });
 
     list.appendChild(li);
@@ -220,12 +305,24 @@ async function loadMissingIcons(apps: AppInfo[]) {
   render();
 }
 
-function launch(app: AppInfo) {
-  invoke("launch_app", { appPath: app.launchPath }).catch((e) => console.error(e));
+function launch(app: AppInfo, asAdmin = false) {
+  invoke("launch_app", { appPath: app.launchPath, asAdmin }).catch((e) => console.error(e));
 }
+
+// 屏蔽 webview 自带菜单（重新加载 / 检查…）。搜索框是唯一例外：那里原生的粘贴、全选
+// 仍然有用。候选行有自己的 contextmenu 处理，这里只负责把其它区域的原生菜单按掉。
+document.addEventListener("contextmenu", (e) => {
+  if (e.target !== input) e.preventDefault();
+});
+
+// 点到菜单外就收起。菜单内不收：mousedown 时把节点删掉，后续 click 就落空了。
+document.addEventListener("mousedown", (e) => {
+  if (!ctxMenu.hidden && !ctxMenu.contains(e.target as Node)) closeContextMenu();
+});
 
 let debounceTimer: number | undefined;
 input.addEventListener("input", () => {
+  closeContextMenu();
   selected = 0;
   // Debounce so fast typing triggers a single filter/render + icon batch, not one
   // per keystroke — that's what made "to" feel laggy while icons loaded.
@@ -245,6 +342,15 @@ document.addEventListener(
   (e) => {
     if (e.isComposing) return;
 
+    // Alt + 序号 直接启动（0 = 第 10 项）。裸数字键必须留给搜索框 —— "7-Zip"、
+    // "360" 这类名字本身就带数字，所以用 Alt 修饰而不是直接吃数字键。
+    if (e.altKey && !e.ctrlKey && !e.metaKey && /^[0-9]$/.test(e.key)) {
+      e.preventDefault();
+      const pick = filtered[e.key === "0" ? 9 : Number(e.key) - 1];
+      if (pick) launch(pick);
+      return;
+    }
+
     if (e.key === "ArrowDown") {
       e.preventDefault();
       if (filtered.length) selected = (selected + 1) % filtered.length;
@@ -255,9 +361,15 @@ document.addEventListener(
       render();
     } else if (e.key === "Enter") {
       const pick = filtered[selected];
-      if (pick) launch(pick);
+      // Ctrl(+Shift)+回车 = 以管理员身份运行（Windows 惯例是 Ctrl+Shift+Enter）。
+      if (pick) launch(pick, e.ctrlKey || e.metaKey);
     } else if (e.key === "Escape") {
       e.preventDefault();
+      // 菜单开着时 Esc 只关菜单，不连带把窗口收掉。
+      if (!ctxMenu.hidden) {
+        closeContextMenu();
+        return;
+      }
       win.hide();
     }
   },
@@ -266,6 +378,7 @@ document.addEventListener(
 
 // Whenever the backend wakes us (global shortcut / single-instance), clear and refocus.
 win.listen("wake", () => {
+  closeContextMenu();
   input.value = "";
   selected = 0;
   render();

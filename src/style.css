@@ -1,0 +1,199 @@
+      /* -------------------------------------------------------------------
+         设计令牌。近黑底 + 终端绿；灰阶统一带绿调（hue≈150），不用纯灰（纯灰发死）。
+         文本三级：强 15:1 / 正文 10:1 / 次级 4.8:1 —— 11px 小字也要过 WCAG AA，
+         旧值 #58655c 只有 3.3:1，注释、序号、footer 全都不达标。
+         满强度强调色只留给两个焦点：输入行与选中行，其余一律降饱和。
+         ------------------------------------------------------------------- */
+      :root {
+        --bg: #05060a;
+        --bg-raised: #0a0d12; /* 浮起层（右键菜单） */
+        --text: #a7bdae; /* 正文：10:1 */
+        --text-head: #e6f2ea; /* 结果名：15:1 */
+        --muted: #6d8075; /* 元信息：4.8:1 */
+        --accent: #3dff9e;
+        --accent-dim: rgba(61, 255, 158, 0.35);
+        --accent-faint: rgba(61, 255, 158, 0.1);
+        --accent-row: rgba(61, 255, 158, 0.14); /* 选中行底：比 hover 实一档 */
+        --hover: rgba(167, 189, 174, 0.06); /* 悬停：中性，弱于选中 */
+        --border: rgba(167, 189, 174, 0.14); /* 分隔线 / 头像描边 */
+        --border-raised: rgba(61, 255, 158, 0.18); /* 浮层描边 */
+        /* 默认系统字体；用户可在 settings.json 的 font 字段填任意已装字体名覆盖。 */
+        --font: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+        /* 单条候选行高（px），与 main.ts 的 ROW_H 同步，用于窗口高度自适应。
+           竖向间距同样由 main.ts 的 CHROME 承载：改下面的 padding/margin 要同步改它。 */
+        --row-h: 38px;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        /* 窗口高度由 main.ts 按内容算死，多出 1px 也不该冒出滚动条。 */
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font);
+        font-variant-ligatures: none;
+      }
+      /* Neon-geek launcher: near-black + terminal green. Opaque, flat — no glass,
+         no gradient washes. The "neon" comes only from the accent highlight. */
+      #app {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        padding: 12px 16px 8px;
+      }
+
+      /* Terminal prompt row: a green › with the raw search field underneath. */
+      #searchrow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-bottom: 8px;
+        /* 分隔线降到 accent-dim：满强度绿只留给"选中行"这一个焦点。 */
+        border-bottom: 1px solid var(--accent-dim);
+      }
+      #searchrow .mark {
+        color: var(--accent);
+        font-size: 18px;
+        user-select: none;
+      }
+      #search {
+        flex: 1;
+        padding: 4px 0;
+        font: inherit;
+        font-size: 18px;
+        color: var(--accent);
+        caret-color: var(--accent);
+        background: transparent;
+        border: none;
+        outline: none;
+      }
+      #search::placeholder { color: var(--muted); }
+
+      #results {
+        list-style: none;
+        margin: 8px 0 0;
+        padding: 0;
+        /* 不滚动：候选超过 resultRows 行时直接截断，引导用户换检索词而不是滚动找。 */
+        overflow: hidden;
+        flex: 1;
+      }
+      #results li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: var(--row-h);
+        overflow: hidden;
+        /* 行高由 --row-h 定死，竖向 padding 不参与高度计算。 */
+        padding: 0 8px;
+        border-left: 2px solid transparent;
+        border-radius: 0 4px 4px 0;
+        color: var(--text);
+        cursor: pointer;
+      }
+      /* 悬停必须比选中弱一档，否则"选中了哪一行"看不出来（去色后更明显）。
+         写在 .active 之前，悬停才不会反过来盖掉选中态。 */
+      #results li:hover { background: var(--hover); }
+      /* 序号：与 Alt+数字 快速启动对应。等宽数字，位数变化不撑动后面的图标。 */
+      #results li .idx {
+        flex: 0 0 12px;
+        text-align: center;
+        color: var(--muted);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        user-select: none;
+      }
+      #results li.active .idx { color: var(--accent); }
+      #results li.active {
+        background: var(--accent-row);
+        border-left-color: var(--accent);
+      }
+      #results li img,
+      #results li .avatar {
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
+        flex: 0 0 24px;
+        object-fit: contain;
+        border: 1px solid var(--border);
+        background: transparent;
+      }
+      #results li .avatar {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--accent);
+        font-weight: 700;
+        font-family: var(--font);
+      }
+      /* 系统功能项：用彩色 emoji 代替通用文档图标。Segoe UI Emoji 负责彩色渲染，
+         放大到接近 24px 满格、line-height 1 不撑高、color inherit 不把 emoji 染成绿色。 */
+      #results li .avatar.emoji {
+        font-family: "Segoe UI Emoji", var(--font);
+        font-size: 20px;
+        line-height: 1;
+        color: inherit;
+        font-weight: 400;
+      }
+      #results li .meta { display: flex; flex-direction: column; min-width: 0; }
+      #results li .name {
+        color: var(--text-head);
+        font-size: 14px;
+        line-height: 1.25;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #results li.active .name {
+        color: var(--accent);
+        text-shadow: 0 0 6px var(--accent-dim);
+      }
+      #results li .comment {
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* 快捷键提示：键帽用强调色、说明压到次级；用 gap 拉开，不靠 &nbsp; 拼空格。 */
+      #footer {
+        display: flex;
+        justify-content: center;
+        gap: 12px;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 11px;
+        user-select: none;
+        white-space: nowrap;
+      }
+      #footer b { color: var(--accent); font-weight: 400; }
+
+      /* 自绘右键菜单：webview 自带菜单（重载/检查元素…）在启动器里全是噪音，
+         屏蔽后只留「以管理员身份运行」「打开文件所在的位置」两项。 */
+      #ctxmenu {
+        position: fixed;
+        z-index: 10;
+        min-width: 176px;
+        padding: 4px;
+        background: var(--bg-raised);
+        border: 1px solid var(--border-raised);
+        border-radius: 6px;
+        /* 两层阴影：紧实的一层定型，扩散的一层拉开浮起感。 */
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5), 0 12px 28px rgba(0, 0, 0, 0.45);
+        font-size: 12px;
+        user-select: none;
+      }
+      #ctxmenu[hidden] { display: none; }
+      #ctxmenu .item {
+        /* padding + line-height 定死 26px 行高（贴 Windows 菜单的手感）。 */
+        padding: 4px 12px;
+        line-height: 18px;
+        border-radius: 4px;
+        color: var(--text);
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      #ctxmenu .item:hover { background: var(--accent-faint); color: var(--accent); }

@@ -839,17 +839,30 @@ fn rescan(app: AppHandle, state: State<Index>) -> Vec<AppInfo> {
     apps
 }
 
-/// Launch a `.lnk` through the OS (ShellExecute behind the scenes — preserves the
-/// shortcut's own arguments and working directory, and handles CJK paths safely),
-/// then hide the launcher.
+/// True for the built-in system entries (`ms-settings:` URIs and shell CLSIDs).
+/// They aren't files on disk, so they can't be elevated — `as_admin` is ignored
+/// for them rather than surfacing a UAC prompt that can never work.
+fn is_system_uri(path: &str) -> bool {
+    path.starts_with("ms-settings:") || path.starts_with("::{")
+}
+
+/// Launch an index entry, optionally elevated ("以管理员身份运行").
+///
+/// Elevation goes through `ShellExecuteW`'s `runas` verb — the `opener` plugin
+/// only does a plain `open`, and whether a UAC prompt appears is the OS's call.
+/// A `.lnk` keeps its own args/working dir (we pass no `lpDirectory`); a portable
+/// exe keeps its cwd rule either way (see `portable::launch_portable`).
 #[tauri::command]
-fn launch_app(app: AppHandle, app_path: String) -> Result<(), String> {
-    // A portable app is launched as its raw `.exe` with the working directory set
-    // to the exe's folder; a Start-Menu entry is a `.lnk` launched through the
-    // opener so it keeps the shortcut's own args/working dir. Which one it is is
-    // decided by the portable manifest, not by the launch path's suffix.
+fn launch_app(app: AppHandle, app_path: String, as_admin: bool) -> Result<(), String> {
+    let elevate = as_admin && !is_system_uri(&app_path);
+
+    // Which kind of entry this is is decided by the portable manifest, not by the
+    // launch path's suffix, so a `.lnk` pointing at an exe still launches as a
+    // shortcut.
     if portable::is_known_portable(&app, &app_path) {
-        launch_portable(&app_path)?;
+        launch_portable(&app_path, elevate)?;
+    } else if elevate {
+        run_elevated(&app_path)?;
     } else if let Err(e) = app.opener().open_path(app_path.as_str(), None::<&str>) {
         return Err(e.to_string());
     }
@@ -858,6 +871,70 @@ fn launch_app(app: AppHandle, app_path: String) -> Result<(), String> {
         let _ = window.hide();
     }
     Ok(())
+}
+
+/// Launch any shell item (a `.lnk`, an `.exe`, …) elevated, via `ShellExecuteW`
+/// with the `runas` verb. `lpDirectory` is left null so the shortcut's own working
+/// directory wins; portables are handled separately because they need their own.
+#[cfg(windows)]
+fn run_elevated(path: &str) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{HINSTANCE, HWND};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWDEFAULT;
+
+    let file: Vec<u16> = std::path::Path::new(path)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let verb: Vec<u16> = "runas".encode_utf16().chain(std::iter::once(0)).collect();
+
+    // ShellExecute returns an HINSTANCE; > 32 means success, <= 32 is an error
+    // code (e.g. 1223 when the user dismisses the UAC prompt).
+    let ret: HINSTANCE = unsafe {
+        ShellExecuteW(
+            HWND::default(),
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR(std::ptr::null()),
+            PCWSTR(std::ptr::null()),
+            SW_SHOWDEFAULT,
+        )
+    };
+    if (ret.0 as isize) <= 32 {
+        return Err(format!("ShellExecute runas failed (code {})", ret.0 as isize));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn run_elevated(_path: &str) -> Result<(), String> {
+    Ok(())
+}
+
+/// Reveal a file in Explorer with the item selected — the shell's own
+/// "打开文件所在的位置".
+#[tauri::command]
+fn reveal_in_explorer(path: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // `explorer /select,<path>` must arrive as ONE argument: Explorer reads the
+        // rest of that token as the path, so splitting flag and path into two args
+        // would silently open "This PC" instead of the folder.
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path))
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 /// Batch-fetch app icons for a set of launch paths, as base64 PNG data URIs.
@@ -938,6 +1015,7 @@ pub fn run() {
             scan_apps,
             rescan,
             launch_app,
+            reveal_in_explorer,
             get_app_icons,
             get_config
         ])
