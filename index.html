@@ -106,6 +106,15 @@
         font-weight: 700;
         font-family: var(--font);
       }
+      /* 系统功能项：用彩色 emoji 代替通用文档图标。Segoe UI Emoji 负责彩色渲染，
+         放大到接近 24px 满格、line-height 1 不撑高、color inherit 不把 emoji 染成绿色。 */
+      #results li .avatar.emoji {
+        font-family: "Segoe UI Emoji", var(--font);
+        font-size: 20px;
+        line-height: 1;
+        color: inherit;
+        font-weight: 400;
+      }
       #results li .meta { display: flex; flex-direction: column; min-width: 0; }
       #results li .name {
         color: var(--text-head);

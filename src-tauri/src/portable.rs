@@ -84,6 +84,7 @@ pub fn parse_portable(e: &PortableEntry) -> crate::AppInfo {
         launch_path: e.path.clone(),
         target_path: e.path.clone(),
         icon: None,
+        aliases: Vec::new(),
     }
 }
 

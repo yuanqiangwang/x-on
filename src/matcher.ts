@@ -16,6 +16,8 @@ export type AppInfo = {
   launchPath: string;
   targetPath: string;
   icon?: string | null;
+  /** 额外的检索名（如系统工具的英文原生名 "Control Panel"），只参与匹配不计入显示。 */
+  aliases?: string[];
 };
 
 /** 一个 CJK 连续段 -> 无声调小写音节数组。唯一接触拼音库的点，测试可注入确定性输出。 */
@@ -97,7 +99,7 @@ type Scored = { app: AppInfo; tier: number; len: number; literal: boolean };
 export class AppMatcher {
   private syllabize: Syllabize;
   private apps: AppInfo[] = [];
-  private idx = new Map<string, PinyinFields>(); // launchPath -> { full, init, words }
+  private idx = new Map<string, PinyinFields[]>(); // launchPath -> [显示名字段, ...别名字段]
 
   constructor(syllabize?: Syllabize) {
     this.syllabize =
@@ -107,11 +109,18 @@ export class AppMatcher {
           .map((it) => (it.pinyin || run).toLowerCase()));
   }
 
-  /** 替换 app 列表并重建索引。每条目只在这里拼音化一次。 */
+  /** 替换 app 列表并重建索引。显示名 + 每个别名都在这里拼音化一次。 */
   index(apps: AppInfo[]): void {
     this.apps = apps;
     this.idx.clear();
-    for (const a of apps) this.idx.set(a.launchPath, computePinyin(a.name, this.syllabize));
+    for (const a of apps) {
+      // 数组与 [name, ...aliases] 严格对齐（不为空别名做裁剪，保证 score 能对应上 raw）。
+      const fields: PinyinFields[] = [computePinyin(a.name, this.syllabize)];
+      for (const alias of a.aliases ?? []) {
+        fields.push(computePinyin(alias, this.syllabize));
+      }
+      this.idx.set(a.launchPath, fields);
+    }
   }
 
   /** 排序返回。空/全空白查询返回全部（原顺序）；无匹配返回 []。 */
@@ -137,12 +146,29 @@ export class AppMatcher {
   }
 
   // 7 层对称打分，tier 越小越强；同 tier 内 len 越小（查询覆盖字段比例越高）越优。
+  // 对显示名 + 每个别名分别打分，取最优——这样中文「控制面板」和英文「control panel」
+  // 都能命中同一个条目。
   private score(a: AppInfo, t: string, q: { full: string; init: string }): Omit<Scored, "app"> | null {
-    const name = a.name.toLowerCase();
-    const f = this.idx.get(a.launchPath);
-    const full = f?.full ?? name;
-    const init = f?.init ?? "";
-    const words = f?.words ?? "";
+    const fields = this.idx.get(a.launchPath);
+    if (!fields || fields.length === 0) return null;
+
+    const raws = [a.name, ...(a.aliases ?? [])]; // 与 index 的 fields 数组对齐
+    let best: Omit<Scored, "app"> | null = null;
+    for (let i = 0; i < fields.length; i++) {
+      const s = this.scoreEntry(raws[i] ?? a.name, fields[i], t, q);
+      if (s && (best === null || s.tier < best.tier || (s.tier === best.tier && s.len < best.len))) {
+        best = s;
+      }
+    }
+    return best;
+  }
+
+  /** 对单条原始名（显示名或某个别名）及其拼音字段打 7 层分。literal 用该条 raw 判定。 */
+  private scoreEntry(raw: string, f: PinyinFields, t: string, q: { full: string; init: string }): Omit<Scored, "app"> | null {
+    const name = raw.toLowerCase();
+    const full = f.full || name;
+    const init = f.init || "";
+    const words = f.words || "";
 
     if (name === t) return { tier: 1, len: name.length, literal: true };
     if (name.startsWith(t)) return { tier: 2, len: name.length, literal: true };

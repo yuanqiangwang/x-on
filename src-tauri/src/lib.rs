@@ -1,5 +1,6 @@
 mod icons;
 mod portable;
+mod system;
 
 use portable::{file_stem, launch_portable, load_manifest, parse_portable, save_manifest, PortableEntry};
 
@@ -120,6 +121,9 @@ pub struct AppInfo {
     pub target_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// 额外的检索名（如系统工具的英文原生名 "Control Panel"），只参与匹配、不计入显示。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 /// Launcher settings, read from the app config dir on startup.
@@ -249,10 +253,19 @@ fn start_menu_roots() -> Vec<PathBuf> {
 /// Parse a `.lnk` into an `AppInfo`. Broken shortcuts resolve to no target —
 /// we still index them so the app is launchable from its `.lnk`.
 fn parse_lnk(path: &Path) -> AppInfo {
-    let name = path
+    // 显示名用 shell 本地化名（"控制面板"），原生英文文件名（"Control Panel"）作别名，
+    // 这样中文「控制面板」和英文「control panel」都能检索命中。
+    let display = shell_display_name(path).unwrap_or_default();
+    let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+    let name = if display.is_empty() { stem.clone() } else { display.clone() };
+    let aliases: Vec<String> = if !display.is_empty() && stem != display {
+        vec![stem]
+    } else {
+        vec![]
+    };
 
     let target_path = lnk::ShellLink::open(path, lnk::encoding::WINDOWS_1252)
         .ok()
@@ -265,7 +278,52 @@ fn parse_lnk(path: &Path) -> AppInfo {
         launch_path: path.to_string_lossy().to_string(),
         target_path,
         icon: None,
+        aliases,
     }
+}
+
+/// Windows 上取一个 shell 项的本地化显示名（`SHGFI_DISPLAYNAME`）。对 .lnk 会解析其
+/// 指向目标的本地化名——这正是开始菜单扫描要用它而非 file_stem 的原因（系统工具的
+/// 英文文件名 vs 中文显示名）。失败/空时返回 `None`，调用方回退 `file_stem`。
+#[cfg(windows)]
+fn shell_display_name(path: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_FLAGS};
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut info: SHFILEINFOW = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        SHGetFileInfoW(
+            PCWSTR(wide.as_ptr()),
+            windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+            Some(&mut info as *mut SHFILEINFOW),
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_FLAGS(0x200), // SHGFI_DISPLAYNAME：本地化显示名，不产生图标
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let end = info
+        .szDisplayName
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(info.szDisplayName.len());
+    let s = String::from_utf16_lossy(&info.szDisplayName[..end])
+        .trim()
+        .to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+#[cfg(not(windows))]
+fn shell_display_name(_path: &Path) -> Option<String> {
+    None
 }
 
 /// True when a shortcut looks like noise (uninstaller / help / updater). Checks
@@ -359,6 +417,21 @@ fn build_index(app: &AppHandle) -> Vec<AppInfo> {
             continue;
         }
         apps.push(parse_portable(e));
+    }
+
+    // 系统功能：内置的「系统设置」URI 入口，作为索引的第三类固定数据源。不建子系统，
+    // 只 append；启动走现有 open_path（ShellExecuteW），图标走现有首字母兜底，去重用
+    // uri 自身（`ms-settings:` / `::{CLSID}` 与文件路径天然不同，不会撞开始菜单去重）。
+    for f in crate::system::builtin_system_features() {
+        let uri = f.uri.to_string();
+        apps.push(AppInfo {
+            name: f.name.to_string(),
+            comment: Some("系统".to_string()),
+            launch_path: uri.clone(),
+            target_path: uri,
+            icon: None,
+            aliases: Vec::new(),
+        });
     }
 
     apps

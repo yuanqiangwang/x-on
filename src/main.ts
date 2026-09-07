@@ -6,6 +6,36 @@ import { AppMatcher, type AppInfo } from "./matcher";
 // 检索匹配深模块：index 重建拼音索引、search 排序返回。分层/同音抑制全藏其内部。
 const matcher = new AppMatcher();
 
+// 系统功能图标：ms-settings / shell 命名空间在壳那里被当成"文件"，若走 SHGetFileInfoW
+// 提取会得到无辨识度的通用文档图标（还白费一次 IPC）。系统项辨识靠名字，这里给每项配
+// 一个贴切的彩色 emoji，忽略那个白文档图标。没配到的兜底统一齿轮 ⚙️。
+const SYSTEM_EMOJI: Record<string, string> = {
+  "ms-settings:personalization": "🎨",
+  "ms-settings:display": "🖥️",
+  "ms-settings:sound": "🔊",
+  "ms-settings:network": "🌐",
+  "ms-settings:bluetooth": "📡",
+  "ms-settings:storage": "💾",
+  "ms-settings:about": "ℹ️",
+  "ms-settings:defaultapps": "🧩",
+  "ms-settings:powersleep": "🔋",
+  "ms-settings:notifications": "🔔",
+  "ms-settings:lockscreen": "🔒",
+  "ms-settings:colors": "🌈",
+  "ms-settings:taskbar": "📊",
+  "ms-settings:themes": "🖼️",
+  "ms-settings:dateandtime": "🕒",
+  "ms-settings:printers": "🖨️",
+  "ms-settings:windowsupdate": "🔄",
+  "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}": "💻", // 此电脑
+  "::{645FF040-5081-101B-9F08-00AA002F954E}": "🗑️", // 回收站
+};
+const isSystemUri = (path: string) => path.startsWith("ms-settings:") || path.startsWith("::{");
+function systemEmoji(path: string): string | null {
+  if (SYSTEM_EMOJI[path]) return SYSTEM_EMOJI[path];
+  return isSystemUri(path) ? "⚙️" : null;
+}
+
 type Settings = {
   accelerator?: string;
   autostart?: boolean;
@@ -125,6 +155,13 @@ function render() {
 }
 
 function avatarEl(a: AppInfo): HTMLElement {
+  const emoji = systemEmoji(a.launchPath);
+  if (emoji) {
+    const av = document.createElement("div");
+    av.className = "avatar emoji";
+    av.textContent = emoji;
+    return av;
+  }
   if (a.icon) {
     const img = document.createElement("img");
     img.src = a.icon;
@@ -144,6 +181,7 @@ function avatarEl(a: AppInfo): HTMLElement {
 async function loadMissingIcons(apps: AppInfo[]) {
   const pending = apps.filter(
     (a) =>
+      !isSystemUri(a.launchPath) && // 系统项用 emoji，不为它们提取图标（省一次 IPC）
       !iconCache.has(a.launchPath) &&
       !iconFetching.has(a.launchPath) &&
       (iconTries.get(a.launchPath) ?? 0) < MAX_ICON_TRIES,
