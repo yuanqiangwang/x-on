@@ -1,6 +1,6 @@
 [package]
 name = "xon"
-version = "0.3.0"
+version = "0.4.0"
 description = "x-on — 极速启动器"
 authors = ["x-on"]
 edition = "2021"
