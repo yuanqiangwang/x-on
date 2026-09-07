@@ -36,6 +36,7 @@ const JUNK_KEYWORDS: &[&str] = &[
     "readme",
     "update",
     "updater",
+    "website",
     // documentation — English standalone doc links (safe: no real product is
     // named "…documentation"/"…manual"/"…guide")
     "documentation",
@@ -358,6 +359,12 @@ fn link_is_valid(target: &str) -> bool {
     let p = Path::new(target);
     // No drive/root (relative, or %ENV%\…) → Shell resolves it → keep.
     if p.is_relative() {
+        return true;
+    }
+    // 本地绝对路径：仅当纯 ASCII 且确认不存在时才判为失效。含非 ASCII（真实中文路径，
+    // 或 lnk crate 用 WINDOWS-1252 解码 UTF-8 产生的乱码 ÎÐÅ…）时无法可靠判断存在性，
+    // 宽容保留——避免误杀安装在中文路径下的应用（如 微信开发者工具）。
+    if !target.is_ascii() {
         return true;
     }
     p.exists()
