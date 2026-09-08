@@ -16,7 +16,6 @@
 
   <!-- Badges -->
   <p align="center">
-    <a href="https://github.com/yuanqiangwang/x-on/actions"><img src="https://img.shields.io/github/actions/workflow/status/yuanqiangwang/x-on/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI Status"></a>
     <a href="https://github.com/yuanqiangwang/x-on/releases"><img src="https://img.shields.io/github/v/release/yuanqiangwang/x-on?style=flat-square&color=3dff9e" alt="Latest Release"></a>
     <a href="https://github.com/yuanqiangwang/x-on/blob/main/LICENSE"><img src="https://img.shields.io/github/license/yuanqiangwang/x-on?style=flat-square&color=green" alt="License"></a>
     <a href="https://github.com/yuanqiangwang/x-on/stargazers"><img src="https://img.shields.io/github/stars/yuanqiangwang/x-on?style=flat-square&logo=github" alt="Stars"></a>
