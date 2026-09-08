@@ -1,5 +1,6 @@
 mod icons;
 mod portable;
+mod store;
 mod system;
 
 use portable::{file_stem, launch_portable, load_manifest, parse_portable, save_manifest, PortableEntry};
@@ -9,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::menu::{IsMenuItem, Menu, MenuItem, Submenu};
-use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::MacosLauncher;
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
 use walkdir::WalkDir;
@@ -378,6 +379,12 @@ fn drop_shortcut(a: &AppInfo) -> bool {
     is_junk(&a.name, &a.target_path) || !link_is_valid(&a.target_path)
 }
 
+/// 名字去重的规范化键：忽略大小写与所有空白。同一程序在开始菜单（`.lnk` 的 shell
+/// 显示名）和 AppsFolder 里的显示名可能只差一个空格或大小写，比原文会漏过去重。
+fn index_name_key(name: &str) -> String {
+    name.split_whitespace().collect::<String>().to_lowercase()
+}
+
 fn build_index(app: &AppHandle) -> Vec<AppInfo> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut apps = Vec::new();
@@ -435,6 +442,35 @@ fn build_index(app: &AppHandle) -> Vec<AppInfo> {
         apps.push(AppInfo {
             name: f.name.to_string(),
             comment: Some("系统".to_string()),
+            launch_path: uri.clone(),
+            target_path: uri,
+            icon: None,
+            aliases: Vec::new(),
+        });
+    }
+
+    // Microsoft Store（打包 / UWP）应用：第四类数据源。商店应用不会往开始菜单目录丢
+    // `.lnk`（磁贴由 Shell 依据 Appx 注册生成），只爬 `.lnk` 就会漏掉它们。这里枚举
+    // `shell:AppsFolder`，只保留带 PackageFamilyName 的项（打包注册的标记），
+    // launch_path 形如 `store:<AUMID>`。其 key 与前三类的文件路径 / URI 天然不同，
+    // 不会撞去重；启动不支持提权，见 launch_app。
+    //
+    // 名字兜底去重：少量打包应用同时也在开始菜单留了 `.lnk`（Python、Outlook、
+    // Microsoft Store…），只按 key 去重抓不到它们——同名两行会在列表里重复出现。这里
+    // 以「开始菜单/便携/系统」已收录的名字为准，跳过同名的商店行。
+    let known_names: HashSet<String> = apps.iter().map(|a| index_name_key(&a.name)).collect();
+    let mut store_names: HashSet<String> = HashSet::new();
+    for f in crate::store::enumerate_store_apps() {
+        if known_names.contains(&index_name_key(&f.name)) {
+            continue;
+        }
+        if !store_names.insert(index_name_key(&f.name)) {
+            continue;
+        }
+        let uri = format!("{}{}", crate::store::LAUNCH_PREFIX, f.aumid);
+        apps.push(AppInfo {
+            name: f.name,
+            comment: Some("商店应用".to_string()),
             launch_path: uri.clone(),
             target_path: uri,
             icon: None,
@@ -502,6 +538,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<TrayIcon<tauri::Wry>> {
                     let handle = app.clone();
                     std::thread::spawn(move || rebuild_index(&handle));
                 }
+                "about" => show_about(app),
                 "quit" => app.exit(0),
                 _ => {
                     if let Some(path) = id.strip_prefix("remove-portable:") {
@@ -510,10 +547,67 @@ fn build_tray(app: &tauri::App) -> tauri::Result<TrayIcon<tauri::Wry>> {
                 }
             }
         })
+        // 鼠标状态复位，分两次（菜单弹出前 / 弹出后）：
+        //   1. 弹出前清掉残留的鼠标捕获：WebView2 在拖选/拖拽时会 SetCapture，窗口随后
+        //      hide 若没释放，鼠标移动仍被投递给隐藏窗口，菜单收不到移动消息；
+        //   2. 弹出后再补一次：实测"指针只在菜单上看不见、滑出菜单就恢复"——说明隐藏
+        //      发生在菜单显示之后（ShowCursor(false) 留下的负计数，或 SetCursor(NULL)），
+        //      所以只在弹出前修一次会被它覆盖。ShowCursor 的计数与线程相关，因此这一步
+        //      必须回到主线程执行，才能和隐藏方平衡回来。
+        // 两步都幂等：ShowCursor 只在检测到确实处于隐藏态时才补回，不会让计数漂移。
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left | MouseButton::Right,
+                button_state: MouseButtonState::Down,
+                ..
+            } = event
+            {
+                ensure_cursor_ready();
+
+                // 菜单由这次点击同步弹出，延后一点再补，才落在"显示之后"。
+                let handle = tray.app_handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    let _ = handle.run_on_main_thread(ensure_cursor_ready);
+                });
+            }
+        })
         .build(app)?;
 
     Ok(built)
 }
+
+/// 复位本线程的鼠标状态：释放可能残留的捕获，并保证光标处于可见、非空状态。
+/// 托盘菜单弹出前调用（见 `build_tray`）；任何一步失败都无所谓——纯兜底。
+#[cfg(windows)]
+fn ensure_cursor_ready() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetCursorInfo, LoadCursorW, SetCursor, ShowCursor, CURSORINFO, CURSOR_SHOWING, IDC_ARROW,
+    };
+
+    unsafe {
+        let _ = ReleaseCapture();
+
+        let mut info: CURSORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
+        if GetCursorInfo(&mut info).is_ok() {
+            // 计数为负时光标整体不绘制，只有 ShowCursor(true) 能补回来——这正好是
+            // "菜单上看不见指针"的症状。只在确实处于隐藏态时才补，避免计数失衡。
+            if info.flags.0 & CURSOR_SHOWING.0 == 0 {
+                eprintln!("xon: cursor display counter was negative; restoring");
+                ShowCursor(true);
+            }
+            // 有些宿主会留下 NULL 线程光标，在下次 WM_SETCURSOR 之前表现为"没有指针"。
+            if let Ok(arrow) = LoadCursorW(None, IDC_ARROW) {
+                SetCursor(arrow);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn ensure_cursor_ready() {}
 
 /// Regenerate the tray menu, with the current portable list as a remove submenu.
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
@@ -521,7 +615,10 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     let open_config_item =
         MenuItem::with_id(app, "open-config", "打开配置文件…", true, None::<&str>)?;
     let rescan = MenuItem::with_id(app, "rescan", "重扫索引", true, None::<&str>)?;
+    let about = MenuItem::with_id(app, "about", "关于 xon", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    // 分隔线：把「关于 / 退出」与前几个索引操作分开（Windows 惯例）。
+    let separator = PredefinedMenuItem::separator(app)?;
 
     let menu = Menu::new(app)?;
     menu.append_items(&[&add])?;
@@ -540,8 +637,95 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         menu.append_items(&[&sub])?;
     }
 
-    menu.append_items(&[&open_config_item, &rescan, &quit])?;
+    menu.append_items(&[&open_config_item, &rescan, &separator, &about, &quit])?;
     Ok(menu)
+}
+
+const ABOUT_TITLE: &str = "关于 xon";
+
+/// Tray action: 关于对话框。只放版本与作者——都取 Cargo 的元数据，不手写，免得和
+/// 二进制漂移（版本还是 package.json / Cargo.toml / tauri.conf.json 三处之一）。
+///
+/// Windows 上走 TaskDialog：dialog 插件底层是原生 MessageBox，而它的 `kind` 不是
+/// Option、默认就是 Info——那个蓝色 i 图标换不掉，MessageBox 也不接受自定义图标。
+/// TaskDialog 可以传任意 HICON，于是把应用自身的图标作为主图标。
+fn show_about(app: &AppHandle) {
+    let version = env!("CARGO_PKG_VERSION");
+    let authors = env!("CARGO_PKG_AUTHORS");
+
+    #[cfg(windows)]
+    if show_about_task_dialog(version, authors) {
+        return;
+    }
+
+    // 回退（非 Windows，或 TaskDialog 不可用）：插件的 MessageBox，仍是 i 图标。
+    let body = format!("xon {version}\n\n作者：{authors}");
+    app.dialog()
+        .message(body)
+        .title(ABOUT_TITLE)
+        .kind(MessageDialogKind::Info)
+        .show(|_| {});
+}
+
+/// 用 TaskDialog 显示关于框，主图标取当前 exe 的图标（与资源管理器/任务栏里看到的
+/// 一致）。需要 comctl32 v6；不可用（或取图标失败）时返回 false，调用方回退。
+#[cfg(windows)]
+fn show_about_task_dialog(version: &str, authors: &str) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
+    use windows::Win32::UI::Controls::{
+        TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_FLAGS, TDCBF_OK_BUTTON,
+        TDF_ALLOW_DIALOG_CANCELLATION, TDF_USE_HICON_MAIN,
+    };
+    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_FLAGS};
+    use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    unsafe {
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
+        let exe_wide: Vec<u16> = exe.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let mut sfi: SHFILEINFOW = std::mem::zeroed();
+        let got = SHGetFileInfoW(
+            PCWSTR(exe_wide.as_ptr()),
+            FILE_ATTRIBUTE_NORMAL,
+            Some(&mut sfi as *mut SHFILEINFOW),
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_FLAGS(0x110), // SHGFI_ICON | SHGFI_LARGEICON（与 icons.rs 同）
+        );
+        if got == 0 || sfi.hIcon.0.is_null() {
+            return false;
+        }
+        let hicon = sfi.hIcon;
+
+        let title: Vec<u16> = ABOUT_TITLE.encode_utf16().chain(std::iter::once(0)).collect();
+        let main: Vec<u16> = format!("xon {version}")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let content: Vec<u16> = format!("作者：{authors}")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut dlg: TASKDIALOGCONFIG = std::mem::zeroed();
+        dlg.cbSize = std::mem::size_of::<TASKDIALOGCONFIG>() as u32;
+        dlg.hwndParent = HWND(std::ptr::null_mut()); // 无主窗口：主窗口是隐藏的
+        dlg.dwFlags = TASKDIALOG_FLAGS(TDF_USE_HICON_MAIN.0 | TDF_ALLOW_DIALOG_CANCELLATION.0);
+        dlg.dwCommonButtons = TDCBF_OK_BUTTON;
+        dlg.pszWindowTitle = PCWSTR(title.as_ptr());
+        dlg.Anonymous1.hMainIcon = hicon;
+        dlg.pszMainInstruction = PCWSTR(main.as_ptr());
+        dlg.pszContent = PCWSTR(content.as_ptr());
+
+        let mut button = 0i32;
+        let shown = TaskDialogIndirect(&dlg, Some(&mut button), None, None);
+        let _ = DestroyIcon(hicon);
+        shown.is_ok()
+    }
 }
 
 /// Swap the current tray menu for a freshly-built one, without creating a second
@@ -794,6 +978,19 @@ fn watch_index_changes(app: &AppHandle) -> notify::Result<()> {
         watcher.watch(d, RecursiveMode::NonRecursive)?;
         dirs.insert(d.clone());
     }
+    // Per-user packaged-app data: installing/uninstalling a Store app creates or
+    // removes a folder here (one per package family). Watching the root
+    // non-recursively picks those up so a Store install/uninstall refreshes the
+    // index live — the real `%ProgramFiles%\WindowsApps` install dir is not watchable
+    // without elevation.
+    let packages_root = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .map(|p| p.join("Packages"))
+        .filter(|p| p.exists());
+    if let Some(packages_root) = packages_root {
+        watcher.watch(&packages_root, RecursiveMode::NonRecursive)?;
+        dirs.insert(packages_root);
+    }
 
     // Keep the watcher (and its dir set) for the process lifetime; the callback
     // reads `dirs` to decide whether a change is relevant.
@@ -855,12 +1052,18 @@ fn is_system_uri(path: &str) -> bool {
 /// exe keeps its cwd rule either way (see `portable::launch_portable`).
 #[tauri::command]
 fn launch_app(app: AppHandle, app_path: String, as_admin: bool) -> Result<(), String> {
-    let elevate = as_admin && !is_system_uri(&app_path);
+    let store_app = store::is_store_launch_path(&app_path);
+    // Store (UWP) apps cannot run elevated — a "run as admin" request is silently
+    // ignored rather than surfacing a UAC prompt that can never succeed. System URIs
+    // behave the same way.
+    let elevate = as_admin && !is_system_uri(&app_path) && !store_app;
 
-    // Which kind of entry this is is decided by the portable manifest, not by the
-    // launch path's suffix, so a `.lnk` pointing at an exe still launches as a
-    // shortcut.
-    if portable::is_known_portable(&app, &app_path) {
+    // Which kind of entry this is is decided by the launch path's *semantics*: a
+    // `store:` prefix activates by AUMID, everything else goes through the portable
+    // manifest check (not a suffix test), so a `.lnk` still launches as a shortcut.
+    if store_app {
+        store::launch(store::strip_launch_prefix(&app_path))?;
+    } else if portable::is_known_portable(&app, &app_path) {
         launch_portable(&app_path, elevate)?;
     } else if elevate {
         run_elevated(&app_path)?;
@@ -971,7 +1174,14 @@ async fn get_app_icons(
                 // Only successes get cached. A miss stays uncached so the frontend's
                 // retry budget can re-extract once the shell icon cache has warmed —
                 // caching a permanent None here would defeat that retry.
-                if let Ok(v) = icons::icon_data_uri(p) {
+                let res = if store::is_store_launch_path(p) {
+                    // `store:` entries have no file: resolve the AUMID to a Shell
+                    // PIDL first (see store.rs), then reuse the PNG pipeline.
+                    store::icon_data_uri(store::strip_launch_prefix(p))
+                } else {
+                    icons::icon_data_uri(p)
+                };
+                if let Ok(v) = res {
                     got.insert(p.clone(), v);
                 }
             }

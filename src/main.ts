@@ -31,6 +31,9 @@ const SYSTEM_EMOJI: Record<string, string> = {
   "::{645FF040-5081-101B-9F08-00AA002F954E}": "🗑️", // 回收站
 };
 const isSystemUri = (path: string) => path.startsWith("ms-settings:") || path.startsWith("::{");
+// Store（UWP）条目的 launchPath 是 `store:<AUMID>`，不是磁盘文件：启动走 AUMID 激活、
+// 图标走 shell PIDL，右键的「提权 / 打开所在位置」对它都不成立（后端提权也会静默忽略）。
+const isStorePath = (path: string) => path.startsWith("store:");
 function systemEmoji(path: string): string | null {
   if (SYSTEM_EMOJI[path]) return SYSTEM_EMOJI[path];
   return isSystemUri(path) ? "⚙️" : null;
@@ -143,8 +146,9 @@ function subtitle(a: AppInfo): string | null {
 
 // ---------------------------------------------------------------------------
 // 右键菜单：只有两项 —— 「以管理员身份运行」「打开文件所在的位置」。
-// 系统功能项（ms-settings: / ::{CLSID}）不是磁盘上的文件：提权会被后端忽略，位置也
-// 无从打开，所以这类行不弹菜单，而不是弹一个点了没反应的菜单。
+// 系统功能项（ms-settings: / ::{CLSID}）和商店应用（store:<AUMID>）都不是磁盘上的
+// 文件：提权会被后端忽略，位置也无从打开，所以这类行不弹菜单，而不是弹一个点了没
+// 反应的菜单。
 // ---------------------------------------------------------------------------
 
 /**
@@ -157,14 +161,15 @@ function subtitle(a: AppInfo): string | null {
  */
 function revealPath(a: AppInfo): string | null {
   const target = (a.targetPath || "").trim();
-  const trustworthy = /^[\x20-\x7e]*$/.test(target) && !isSystemUri(target);
+  const trustworthy =
+    /^[\x20-\x7e]*$/.test(target) && !isSystemUri(target) && !isStorePath(target);
   const p = (trustworthy && target ? target : a.launchPath).trim();
-  return p && !isSystemUri(p) ? p : null;
+  return p && !isSystemUri(p) && !isStorePath(p) ? p : null;
 }
 
 function openContextMenu(a: AppInfo, x: number, y: number) {
   const items: { label: string; run: () => void }[] = [];
-  if (!isSystemUri(a.launchPath)) {
+  if (!isSystemUri(a.launchPath) && !isStorePath(a.launchPath)) {
     items.push({ label: "以管理员身份运行", run: () => launch(a, true) });
     const target = revealPath(a);
     if (target) {

@@ -1,8 +1,8 @@
 [package]
 name = "xon"
 version = "0.5.0"
-description = "x-on — 极速启动器"
-authors = ["x-on"]
+description = "Xon — 纯粹的Windows启动器"
+authors = ["游游先生"]
 edition = "2021"
 
 [lib]
@@ -29,8 +29,13 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
+    "Win32_System_Com",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Controls",
     "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
 ] }

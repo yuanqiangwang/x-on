@@ -14,6 +14,9 @@ use std::io::Cursor;
 
 use base64::Engine as _;
 
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::HICON;
+
 pub fn icon_data_uri(path: &str) -> Result<Option<String>, String> {
     #[cfg(windows)]
     {
@@ -39,31 +42,25 @@ fn png_for(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
 }
 
 #[cfg(windows)]
-/// Pull an app's icon as top-down RGBA pixels. Uses `GetDIBits` so it works for
-/// both DIB sections and the device-dependent bitmaps that most shell icons are —
-/// the previous `bmBits != null` special case silently dropped the latter.
+pub(crate) fn icon_data_uri_from_hicon(hicon: HICON) -> Result<Option<String>, String> {
+    let Some((rgba, w, h)) = hicon_to_rgba(hicon)? else {
+        return Ok(None);
+    };
+    let png = encode_png(&rgba, w as u32, h as u32)?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+    Ok(Some(format!("data:image/png;base64,{b64}")))
+}
+
+#[cfg(windows)]
+/// Pull a file's icon as top-down RGBA pixels, resolved from a filesystem path.
+/// Store (UWP) apps have no resolvable file; `store.rs` extracts an `HICON` from a
+/// PIDL instead and shares this pipeline via `icon_data_uri_from_hicon`.
 fn extract_rgba(path: &std::path::Path) -> Result<Option<(Vec<u8>, usize, usize)>, String> {
-    use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
 
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::Graphics::Gdi::{
-        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
-    };
     use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_FLAGS};
-    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
-
-    // Any GDI object we create below must be released on every exit from here.
-    unsafe fn release_all(hbm: HGDIOBJ, mask: HBITMAP, hicon: HICON) {
-        let _ = DeleteObject(hbm);
-        if !mask.0.is_null() {
-            let _ = DeleteObject(HGDIOBJ(mask.0));
-        }
-        let _ = DestroyIcon(hicon);
-    }
 
     // Wide, NUL-terminated path.
     let wide: Vec<u16> = path
@@ -85,6 +82,37 @@ fn extract_rgba(path: &std::path::Path) -> Result<Option<(Vec<u8>, usize, usize)
             return Ok(None);
         }
         let hicon = info.hIcon;
+        if hicon.0.is_null() {
+            return Ok(None);
+        }
+        hicon_to_rgba(hicon)
+    }
+}
+
+#[cfg(windows)]
+/// Pull an `HICON`'s pixels as top-down RGBA. Uses `GetDIBits` so it works for
+/// both DIB sections and the device-dependent bitmaps that most shell icons are —
+/// the previous `bmBits != null` special case silently dropped the latter.
+fn hicon_to_rgba(hicon: HICON) -> Result<Option<(Vec<u8>, usize, usize)>, String> {
+    use std::ffi::c_void;
+
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, ICONINFO};
+
+    // Any GDI object we create below must be released on every exit from here.
+    unsafe fn release_all(hbm: HGDIOBJ, mask: HBITMAP, hicon: HICON) {
+        let _ = DeleteObject(hbm);
+        if !mask.0.is_null() {
+            let _ = DeleteObject(HGDIOBJ(mask.0));
+        }
+        let _ = DestroyIcon(hicon);
+    }
+
+    unsafe {
         if hicon.0.is_null() {
             return Ok(None);
         }
