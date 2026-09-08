@@ -1,6 +1,6 @@
 [package]
 name = "xon"
-version = "0.5.0"
+version = "0.6.0"
 description = "Xon — 纯粹的Windows启动器"
 authors = ["游游先生"]
 edition = "2021"
