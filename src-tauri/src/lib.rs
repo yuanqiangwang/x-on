@@ -122,7 +122,8 @@ pub struct AppInfo {
     pub target_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// 额外的检索名（如系统工具的英文原生名 "Control Panel"），只参与匹配、不计入显示。
+    /// 额外的检索名（如系统工具的英文原生名 "Control Panel"）：参与匹配，前端在列表里
+    /// 把它作为副标题显示（中文显示名下补一行原生名）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
 }

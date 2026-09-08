@@ -120,6 +120,28 @@ function setActive(i: number) {
 }
 
 // ---------------------------------------------------------------------------
+// 副标题：本地化显示名下面补一行「原生名」。
+//
+// 开始菜单里大量系统工具的 `.lnk` 文件名是英文（`control panel.lnk`），而 shell 给的
+// 显示名是本地化后的中文（控制面板）—— 后端把 stem 存进 `aliases` 让英文/拼音也能命中，
+// 这里把它显示出来，用户才知道这条为什么被匹配上、以及它确实就是那个程序。
+//
+// 原生名优先于 comment（"系统"/"便携应用"这类来源标签信息量更低），两者都有时同行拼
+// 放：行高固定 38px，摆不下第二行副标题。
+// ---------------------------------------------------------------------------
+const fold = (s: string) => s.replace(/\s+/g, "").toLowerCase();
+
+function subtitle(a: AppInfo): string | null {
+  const name = fold(a.name);
+  const native = (a.aliases ?? [])
+    .map((s) => s.trim())
+    .find((s) => s && fold(s) !== name);
+  const comment = a.comment?.trim() ?? "";
+  if (native && comment) return `${native} · ${comment}`;
+  return native || comment || null;
+}
+
+// ---------------------------------------------------------------------------
 // 右键菜单：只有两项 —— 「以管理员身份运行」「打开文件所在的位置」。
 // 系统功能项（ms-settings: / ::{CLSID}）不是磁盘上的文件：提权会被后端忽略，位置也
 // 无从打开，所以这类行不弹菜单，而不是弹一个点了没反应的菜单。
@@ -204,10 +226,11 @@ function render() {
     nameEl.className = "name";
     nameEl.textContent = a.name;
     meta.appendChild(nameEl);
-    if (a.comment) {
+    const sub = subtitle(a);
+    if (sub) {
       const c = document.createElement("span");
-      c.className = "comment";
-      c.textContent = a.comment;
+      c.className = "sub";
+      c.textContent = sub;
       meta.appendChild(c);
     }
     li.appendChild(meta);

@@ -148,9 +148,12 @@
         color: var(--accent);
         text-shadow: 0 0 6px var(--accent-dim);
       }
-      #results li .comment {
+      /* 副标题：本地化名下面的原生名（控制面板 / control panel），见 main.ts subtitle。
+         名称与副标题共占一行行高，超长单行截断；meta 的 min-width:0 保证省略号生效。 */
+      #results li .sub {
         color: var(--muted);
         font-size: 11px;
+        line-height: 1.2;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;

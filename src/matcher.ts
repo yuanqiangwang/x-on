@@ -16,7 +16,7 @@ export type AppInfo = {
   launchPath: string;
   targetPath: string;
   icon?: string | null;
-  /** 额外的检索名（如系统工具的英文原生名 "Control Panel"），只参与匹配不计入显示。 */
+  /** 额外的检索名（如系统工具的英文原生名 "Control Panel"）：参与匹配，并在列表里作副标题显示。 */
   aliases?: string[];
 };
 
