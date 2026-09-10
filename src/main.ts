@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalSize } from "@tauri-apps/api/dpi";
-import { AppMatcher, type AppInfo } from "./matcher";
+import { AppMatcher, type AppInfo, type UsageMap } from "./matcher";
 
 // 检索匹配深模块：index 重建拼音索引、search 排序返回。分层/同音抑制全藏其内部。
 const matcher = new AppMatcher();
@@ -123,7 +123,23 @@ async function loadApps(force = false) {
     return cached !== undefined ? { ...a, icon: cached } : a;
   });
   matcher.index(apps);
+  // 权重先就位再渲染：否则首屏会用"无权重"的顺序画一次、再跳成带权重的，闪一下。
+  await refreshUsage();
   render();
+}
+
+/**
+ * 拉取使用记录并注入 matcher（matcher 不自己读存储，见 ADR 0002 第 5 条）。
+ * 「记一次」发生在后端 launch_app 成功之后的后台线程里，所以新记录要到下一次唤起
+ * 才会体现在排序上 —— 那时权重才真正有用，不值得为它碰启动路径。
+ */
+async function refreshUsage() {
+  try {
+    const usage = await invoke<UsageMap>("get_usage");
+    matcher.setUsage(usage ?? {});
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 /** 只切换选中态高亮，不整表重绘——鼠标划过时逐行 render 会抖，且白跑一轮图标加载。 */
@@ -481,6 +497,9 @@ win.listen("wake", () => {
   closeContextMenu();
   resetForNextWake();
   input.focus();
+  // 上一次启动记下的次数在这里生效（写盘在后端后台线程，见 ADR 0002）。
+  // 此刻列表是空态，不需要重绘 —— 下次 render 自然会用上新权重。
+  void refreshUsage();
 });
 
 // Reload the index when it changes underneath us (tray portable add/remove, rescan).

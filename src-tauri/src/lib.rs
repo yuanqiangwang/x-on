@@ -3,6 +3,7 @@ mod icons;
 mod portable;
 mod store;
 mod system;
+mod usage;
 
 use portable::{file_stem, launch_portable, load_manifest, parse_portable, save_manifest, PortableEntry};
 
@@ -544,6 +545,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<TrayIcon<tauri::Wry>> {
                     let handle = app.clone();
                     std::thread::spawn(move || rebuild_index(&handle));
                 }
+                "clear-usage" => clear_usage(app),
                 "about" => show_about(app),
                 "quit" => app.exit(0),
                 _ => {
@@ -621,6 +623,9 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     let open_config_item =
         MenuItem::with_id(app, "open-config", "打开配置文件…", true, None::<&str>)?;
     let rescan = MenuItem::with_id(app, "rescan", "重扫索引", true, None::<&str>)?;
+    // 使用记录的复位出口（ADR 0002 第 6 条）。
+    let clear_usage_item =
+        MenuItem::with_id(app, "clear-usage", "清空使用记录", true, None::<&str>)?;
     let about = MenuItem::with_id(app, "about", "关于 xon", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     // 分隔线：把「关于 / 退出」与前几个索引操作分开（Windows 惯例）。
@@ -643,7 +648,14 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         menu.append_items(&[&sub])?;
     }
 
-    menu.append_items(&[&open_config_item, &rescan, &separator, &about, &quit])?;
+    menu.append_items(&[
+        &open_config_item,
+        &rescan,
+        &clear_usage_item,
+        &separator,
+        &about,
+        &quit,
+    ])?;
     Ok(menu)
 }
 
@@ -807,6 +819,14 @@ fn open_config(app: &AppHandle) {
     }
     if let Err(e) = app.opener().open_path(file.to_string_lossy().as_ref(), None::<&str>) {
         eprintln!("open config failed: {e}");
+    }
+}
+
+/// Tray action: 清空使用记录（ADR 0002 第 6 条的复位出口）。删掉 `usage.json` 即可 ——
+/// 前端在下次唤起时拉到空记录，权重自然归零，排序回到纯名称打分。
+fn clear_usage(app: &AppHandle) {
+    if let Err(e) = usage::clear_usage(app) {
+        eprintln!("clear usage failed: {e}");
     }
 }
 
@@ -1031,6 +1051,13 @@ fn get_config(app: AppHandle) -> Config {
     load_config(&app)
 }
 
+/// 全量使用记录快照（`launchPath -> { count, lastUsed }`）。只读不改：把计数换算成
+/// 排序权重是**排序策略**，住在前端的 `matcher.ts`（ADR 0002 第 5 条），后端不做。
+#[tauri::command]
+fn get_usage(app: AppHandle) -> HashMap<String, usage::UsageEntry> {
+    usage::load_usage(&app).entries
+}
+
 #[tauri::command]
 fn scan_apps(state: State<Index>) -> Vec<AppInfo> {
     state.apps.lock().map(|g| g.clone()).unwrap_or_default()
@@ -1080,6 +1107,28 @@ fn launch_app(app: AppHandle, app_path: String, as_admin: bool) -> Result<(), St
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
+
+    // 记一次使用（ADR 0002 第 2/5 条）：只在启动**成功之后**，且在后台线程写盘 ——
+    // 用户可见的路径（按键 → 候选 → 启动）上不做任何 IO。索引还没就绪时直接跳过，
+    // 否则 `record_launch` 的清理会把整份记录误当成"已不在索引里"而删空。
+    {
+        let handle = app.clone();
+        let recorded = app_path.clone();
+        std::thread::spawn(move || {
+            let Some(state) = handle.try_state::<Index>() else {
+                return;
+            };
+            let known: HashSet<String> = match state.apps.lock() {
+                Ok(guard) => guard.iter().map(|a| a.launch_path.clone()).collect(),
+                Err(_) => return,
+            };
+            if known.is_empty() {
+                return;
+            }
+            usage::record_launch(&handle, &recorded, &known);
+        });
+    }
+
     Ok(())
 }
 
@@ -1234,7 +1283,8 @@ pub fn run() {
             launch_app,
             reveal_in_explorer,
             get_app_icons,
-            get_config
+            get_config,
+            get_usage
         ])
         .setup(|app| {
             let handle = app.handle().clone();
