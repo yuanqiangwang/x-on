@@ -77,10 +77,17 @@ win.onFocusChanged(({ payload: focused }) => {
 });
 const list = document.getElementById("results") as HTMLUListElement;
 const ctxMenu = document.getElementById("ctxmenu") as HTMLDivElement;
+const hintRecent = document.getElementById("hint-recent") as HTMLElement;
+const footer = document.getElementById("footer") as HTMLElement;
+const escLabel = document.getElementById("esc-label") as HTMLElement;
 
 let apps: AppInfo[] = [];
+// filtered 恒等于"当前可见的列表"：键盘操作（回车 / Alt+数字 / 方向键）都基于它。
 let filtered: AppInfo[] = [];
 let selected = 0;
+// 空态是否展开了「常用」列表（仅 ↓ 可展开）。空态默认只是一个输入框 —— 唤起零成本、
+// 不拉图标；常用列表只在用户主动按 ↓ 时才出现。任何输入 / 收起 / 唤起都会复位。
+let browsing = false;
 
 // 窗口自适配常量：单条候选行高（与 index.html 的 --row-h 同步）、空查询窗口高、
 // 结果列表上边距。CHROME/GAP 为估算，实际高度按 dev 视口校准。
@@ -178,6 +185,7 @@ function revealPath(a: AppInfo): string | null {
 function resetForNextWake() {
   input.value = "";
   selected = 0;
+  browsing = false;
   render();
 }
 
@@ -222,7 +230,21 @@ function closeContextMenu() {
 }
 
 function render() {
-  filtered = matcher.search(input.value);
+  // filtered 必须等于"当前可见的列表"，键盘操作（回车 / Alt+数字 / 方向键）全基于它，
+  // 这样空态未展开时不会盲启动一条看不见的候选。三态：
+  //   有查询   -> 搜索结果
+  //   空态展开 -> 常用列表（↓ 触发）
+  //   空态收起 -> 空（默认；唤起时只是一个输入框）
+  const query = input.value.trim();
+  // 截断到 resultRows：窗口只装得下这么多行，navigation 就只该在这些行里走。
+  // 排序的 tier 保证"打够了它就在前面"（精确/前缀命中置顶），所以截断藏掉的只是模糊
+  // 匹配的尾巴——那正是该继续打字、而不是往下滚的场景。顺带让 Alt+序号、图标加载
+  // （loadMissingIcons 只吃可见行）和可见范围三者的边界完全一致。
+  filtered = query
+    ? matcher.search(input.value).slice(0, maxRows)
+    : browsing
+      ? matcher.frequent(maxRows)
+      : [];
   if (selected >= filtered.length) selected = Math.max(0, filtered.length - 1);
 
   list.textContent = "";
@@ -254,9 +276,8 @@ function render() {
     }
     li.appendChild(meta);
 
-    // 点击即启动（此前只选中）。悬停同步键盘选中态，"指到某项再回车"才不跳回第一项。
+    // 点击即启动（此前只选中）。悬停同步选中态见下方 list 上的 mousemove。
     li.addEventListener("click", () => launch(a));
-    li.addEventListener("mouseenter", () => setActive(i));
     // 右键：屏蔽 webview 自带菜单，换成只含两项的自绘菜单。
     li.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -272,13 +293,22 @@ function render() {
 
   loadMissingIcons(filtered);
 
-  // 窗口高度自适应：空查询 = 只显示输入行；有结果 = 输入行 + 可见候选行数。
-  const hasQuery = input.value.trim().length > 0;
-  list.style.display = hasQuery ? "block" : "none";
-  const rows = hasQuery ? Math.min(filtered.length, maxRows) : 0;
+  // 窗口高度自适应：列表可见 = 输入行 + 可见候选行数；否则只显示输入行（空态）。
+  // showList 与上方 filtered 同源：能看见的才可导航，二者必须一致。
+  const showList = query.length > 0 || browsing;
+  list.style.display = showList ? "block" : "none";
+  // filtered 上方已截断到 maxRows，可见行数就是它自身。
+  const rows = showList ? filtered.length : 0;
   // 每次都 setSize（不缓存）：show 会按 config 尺寸重置窗口，每次 render 强制贴回内容高度。
-  const height = CHROME + (hasQuery ? GAP + rows * ROW_H : 0);
+  const height = CHROME + (showList ? GAP + rows * ROW_H : 0);
   win.setSize(new LogicalSize(640, height)).catch(() => {});
+
+  // 提示栏随状态切换：空态收起 = 「↓ 常用 / Esc 隐藏」；列表可见 = 「↑↓ 选择 / ↵ 启动 …」。
+  // 空态下那些键（除 ↓ 展开外）都不生效，显示出来只会误导。
+  hintRecent.hidden = showList;
+  footer.classList.toggle("empty", !showList);
+  // Esc 的含义分两级：展开态先收起常用列表，其余情况直接隐藏窗口。
+  escLabel.textContent = browsing ? "收起" : "隐藏";
 }
 
 function avatarEl(a: AppInfo): HTMLElement {
@@ -362,10 +392,21 @@ document.addEventListener("mousedown", (e) => {
   if (!ctxMenu.hidden && !ctxMenu.contains(e.target as Node)) closeContextMenu();
 });
 
+// 悬停同步选中态（"指到某项再回车"才不跳回第一项）。用 list 级的 mousemove，而不是给每行
+// 挂 mouseenter：列表重建后光标下新插入的行会被浏览器补发 mouseenter（指针其实没动），
+// 把刚被键盘选中的行弹回去。mousemove 只在真实移动时触发，天然免疫重建。
+list.addEventListener("mousemove", (e) => {
+  const li = (e.target as Element | null)?.closest("li");
+  if (!li) return;
+  const i = Array.from(list.children).indexOf(li);
+  if (i >= 0) setActive(i);
+});
+
 let debounceTimer: number | undefined;
 input.addEventListener("input", () => {
   closeContextMenu();
   selected = 0;
+  browsing = false; // 一开始打字就退出常用浏览态，回到搜索结果
   // Debounce so fast typing triggers a single filter/render + icon batch, not one
   // per keystroke — that's what made "to" feel laggy while icons loaded.
   if (debounceTimer !== undefined) clearTimeout(debounceTimer);
@@ -395,21 +436,36 @@ document.addEventListener(
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      if (filtered.length) selected = (selected + 1) % filtered.length;
-      render();
+      if (!filtered.length && !input.value.trim()) {
+        // 空态未展开时，↓ 的第一次按下 = 展开「常用」并选中第 1 项。这就是"向下进入
+        // 列表"这一个手势的自然延伸，不引入新键位（Tab 会让入口键与导航键分家）。
+        browsing = true;
+        selected = 0;
+        render(); // 列表从无到有、窗口还要长高 —— 这一步必须整表重建
+      } else if (filtered.length) {
+        // 仅在已有列表内移动高亮时走 setActive，不要 render：整表重建会把光标下的
+        // 那一行销毁再插入，指针未动却让浏览器补发 mouseenter → setActive 把选中态
+        // 弹回原处（表现为"鼠标悬停在列表上时方向键失灵"）。顺带省一轮图标加载。
+        setActive((selected + 1) % filtered.length);
+      }
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      if (filtered.length) selected = (selected - 1 + filtered.length) % filtered.length;
-      render();
+      if (filtered.length) setActive((selected - 1 + filtered.length) % filtered.length);
     } else if (e.key === "Enter") {
       const pick = filtered[selected];
       // Ctrl(+Shift)+回车 = 以管理员身份运行（Windows 惯例是 Ctrl+Shift+Enter）。
       if (pick) launch(pick, e.ctrlKey || e.metaKey);
     } else if (e.key === "Escape") {
       e.preventDefault();
-      // 菜单开着时 Esc 只关菜单，不连带把窗口收掉。
+      // 分级退出：先关右键菜单，再收起常用列表，最后才隐藏窗口。
       if (!ctxMenu.hidden) {
         closeContextMenu();
+        return;
+      }
+      if (browsing) {
+        browsing = false;
+        selected = 0;
+        render();
         return;
       }
       win.hide();

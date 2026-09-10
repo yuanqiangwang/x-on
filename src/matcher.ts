@@ -2,9 +2,9 @@ import { pinyin } from "pinyin-pro";
 
 // ---------------------------------------------------------------------------
 // 检索匹配深模块。
-// 对外只有两个入口：index（重建每条目的拼音索引，每条目只拼音化一次）与
-// search（排序返回，只消费排好序的结果，不暴露 tier）。全部匹配/排序/噪音
-// 控制/同音抑制都藏在模块内部 —— 改匹配策略只动这一个文件（locality）。
+// 对外三个入口：index（重建每条目的拼音索引，每条目只拼音化一次）、
+// search（排序返回，只消费排好序的结果，不暴露 tier）与 frequent（空态常用列表）。
+// 全部匹配/排序/噪音控制/同音抑制都藏在模块内部 —— 改匹配策略只动这一个文件（locality）。
 //
 // 核心：查询与条目走同一套拼音化。dd / dingding / 钉钉 / 丁丁 都能命中
 // "钉钉"；且「字面命中排他」保证打对字就不带出同音候选。
@@ -143,6 +143,17 @@ export class AppMatcher {
     const pool = CJK_RE.test(t) && literal.length ? literal : [...literal, ...pinyin];
     pool.sort((x, y) => x.tier - y.tier || x.len - y.len);
     return pool.map((s) => s.app);
+  }
+
+  /**
+   * 空态常用列表：按 ↓ 展开时的候选来源，最多 `limit` 条。
+   *
+   * 当前是索引序占位（= `build_index` 的插入序，实际上接近随机），只为先把展开/收起的
+   * 交互跑通；使用频率权重落地后，这里换成按 frecency 排序即可，调用方无感。
+   * 排序策略属于本模块，所以入口放这里而不是 main.ts。
+   */
+  frequent(limit: number): AppInfo[] {
+    return this.apps.slice(0, Math.max(0, limit));
   }
 
   // 7 层对称打分，tier 越小越强；同 tier 内 len 越小（查询覆盖字段比例越高）越优。

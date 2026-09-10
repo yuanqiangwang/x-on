@@ -172,6 +172,11 @@
         white-space: nowrap;
       }
       #footer b { color: var(--accent); font-weight: 400; }
+      /* 空态提示（↓ 常用）：只在空态收起时显示，展开后由 main.ts 的 render() 置 hidden。 */
+      #footer span[hidden] { display: none; }
+      /* 空态收起时没有可选的列表，与列表有关的键位提示（↑↓ / ↵ / Ctrl+↵ / Alt+序号）
+         都不成立，整组隐藏；列表可见时再换回来。 */
+      #footer.empty .hint-list { display: none; }
 
       /* 自绘右键菜单：webview 自带菜单（重载/检查元素…）在启动器里全是噪音，
          屏蔽后只留「以管理员身份运行」「打开文件所在的位置」两项。 */

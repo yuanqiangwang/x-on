@@ -13,12 +13,13 @@
         <input id="search" type="text" autocomplete="off" spellcheck="false" placeholder="搜索应用…" />
       </div>
       <ul id="results"></ul>
-      <div id="footer">
-        <span><b>↑↓</b> 选择</span>
-        <span><b>↵</b> 启动</span>
-        <span><b>Ctrl+↵</b> 管理员</span>
-        <span><b>Alt+序号</b> 速启</span>
-        <span><b>Esc</b> 隐藏</span>
+      <div id="footer" class="empty">
+        <span id="hint-recent" hidden><b>↓</b> 常用</span>
+        <span class="hint-list"><b>↑↓</b> 选择</span>
+        <span class="hint-list"><b>↵</b> 启动</span>
+        <span class="hint-list"><b>Ctrl+↵</b> 管理员</span>
+        <span class="hint-list"><b>Alt+序号</b> 速启</span>
+        <span id="hint-esc"><b>Esc</b> <span id="esc-label">隐藏</span></span>
         <span><b>Alt+Space</b> 唤出</span>
       </div>
     </div>
