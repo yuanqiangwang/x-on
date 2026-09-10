@@ -1,3 +1,4 @@
+mod commands;
 mod icons;
 mod portable;
 mod store;
@@ -477,6 +478,11 @@ fn build_index(app: &AppHandle) -> Vec<AppInfo> {
             aliases: Vec::new(),
         });
     }
+
+    // PATH 命令：第五类数据源，必须放在最后 —— 它先按名字找前四类已有的条目，
+    // 命中就只补英文别名（不新增行，`calc` 因此命中的是 Store 的「计算器」），
+    // 未命中才追加新条目。顺序反了会退化成"每条命令都多一行"。见 commands.rs。
+    crate::commands::apply_commands(&mut apps);
 
     apps
 }

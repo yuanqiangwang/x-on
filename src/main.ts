@@ -66,8 +66,14 @@ function applyFont(font?: string | null) {
 const win = getCurrentWebviewWindow();
 const input = document.getElementById("search") as HTMLInputElement;
 // 失焦即隐藏：窗口一失去焦点（点到别处）就收起，下次 Alt+Space 再唤起。
+// 收起后立刻把界面复位到空态：下次 show() 的第一帧就应该是空输入 + 空态高度，
+// 否则用户会先看到上一次的搜索结果、再看到窗口"塌"回去（Raycast 为此专门等
+// WebView 画完才显示窗口，是同一类闪烁）。此刻窗口已隐藏，重排看不见。
 win.onFocusChanged(({ payload: focused }) => {
-  if (!focused) win.hide();
+  if (!focused) {
+    win.hide();
+    resetForNextWake();
+  }
 });
 const list = document.getElementById("results") as HTMLUListElement;
 const ctxMenu = document.getElementById("ctxmenu") as HTMLDivElement;
@@ -165,6 +171,14 @@ function revealPath(a: AppInfo): string | null {
     /^[\x20-\x7e]*$/.test(target) && !isSystemUri(target) && !isStorePath(target);
   const p = (trustworthy && target ? target : a.launchPath).trim();
   return p && !isSystemUri(p) && !isStorePath(p) ? p : null;
+}
+
+/// 复位到空态：清空输入、回到第一条、按空态重算窗口高度。
+/// 隐藏时和 wake 时各调一次，保证"显示出来的第一帧"永远是干净的。
+function resetForNextWake() {
+  input.value = "";
+  selected = 0;
+  render();
 }
 
 function openContextMenu(a: AppInfo, x: number, y: number) {
@@ -399,17 +413,17 @@ document.addEventListener(
         return;
       }
       win.hide();
+      resetForNextWake();
     }
   },
   true,
 );
 
 // Whenever the backend wakes us (global shortcut / single-instance), clear and refocus.
+// 正常情况下隐藏时已经复位过了，这里再补一次，覆盖"窗口还可见就被再次唤起"的情形。
 win.listen("wake", () => {
   closeContextMenu();
-  input.value = "";
-  selected = 0;
-  render();
+  resetForNextWake();
   input.focus();
 });
 
@@ -428,7 +442,23 @@ win.listen<Settings>("settings-changed", (e) => {
 
 input.addEventListener("focus", render);
 
+// 首次渲染 emoji 时 WebView 要沿字体链逐个 fallback，第一次出现会慢一拍
+// （Raycast 踩过同一个坑，解法也是预热）。启动时把所有会用到的 emoji 一次性
+// 渲染掉，"Segoe UI Emoji" 就常驻了，之后系统项头像不会再有首次卡顿。
+function prewarmEmojiFont() {
+  const probe = document.createElement("div");
+  probe.setAttribute("aria-hidden", "true");
+  probe.style.cssText =
+    "position:fixed;left:-9999px;top:0;white-space:nowrap;" +
+    `font-family:"Segoe UI Emoji",${FALLBACK_FONT_CHAIN};font-size:20px;line-height:1;`;
+  probe.textContent = [...new Set([...Object.values(SYSTEM_EMOJI), "⚙️"])].join("");
+  document.body.appendChild(probe);
+  void probe.offsetHeight; // 强制一次布局，字体才会真正加载
+  probe.remove();
+}
+
 (async () => {
+  prewarmEmojiFont();
   try {
     const settings = await invoke<Settings>("get_config");
     applyFont(settings.font);

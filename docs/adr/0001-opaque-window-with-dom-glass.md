@@ -1,7 +1,8 @@
 # ADR 0001 — 不透明窗口 + DOM 哑光毛玻璃
 
-- **Status**: Accepted
+- **Status**: Accepted（2026-09-09 修订，**决策不变**，补充了根因、外部佐证与配套实践）
 - **Date**: 2026-09-05
+- **Last reviewed**: 2026-09-09
 
 ## Context
 
@@ -11,20 +12,74 @@ Raycast / uTools 的经典观感是"毛玻璃模糊桌面"。直觉做法是透�
 - 真透明窗口（`transparent: true`）在 Windows + WebView2 上有已知问题：黑色伪影、点击穿透、重绘 bug，且与 `alwaysOnTop` / `skipTaskbar` 组合易导致无法获得焦点。
 - 要做真正的 Acrylic 需走 DWM `DWMWA_SYSTEMBACKDROP_TYPE` + 原生整合，复杂度高，并与透明窗口存在冲突。
 
+### 补充：一条更根本的约束（2026-09-09）
+
+上面三条其实是**同一个根因的三个症状**，值得单独写下来，因为后续所有"窗口边界"类问题都由它派生：
+
+> **WebView 是一个封闭的盒子。它能画的东西，不会越出窗口；它能采到的东西，不会超出文档。**
+
+- 采样不到桌面 → `backdrop-filter` 无效（毛玻璃做不了）
+- 画不到窗口外 → DOM 浮层必然被裁切（见下方"原生菜单实验"）
+
+这条约束无法通过前端技巧绕开，只能靠**原生层**突破（原生窗口、DWM、系统菜单）。
+
+### 补充：外部佐证 —— Raycast 2.0 的技术披露（2026-09-09）
+
+Raycast 于 2026-05 发布 2.0 公测，把 v1 的纯原生 Swift/AppKit 重写为混合架构（macOS: Swift+AppKit / Windows: C#+.NET8+WPF 的原生壳，内嵌系统 WebView 跑 React+TS）。他们公开的做法逐条印证了本 ADR：
+
+| 本 ADR 的判断 | Raycast 的对应说法/做法 |
+| --- | --- |
+| 真 Acrylic 必须走原生整合 | Windows 上的 acrylic 是"原生壳与 WebView2 运行时精细配合"做出来的，不是 CSS |
+| 启动白闪要自己控制初始化参数 | "we control all the initialization parameters ourselves... avoid the white-rectangle flash" |
+| 显示前必须保证内容已就绪 | 用 `_doAfterNextPresentationUpdate` 等 WebView 画完再显示窗口，否则"a flash of stale or empty content" |
+| DOM 浮层会越不出窗口 | popover / tooltip **用原生窗口渲染**，理由正是 "They can extend beyond the window bounds" |
+
+> 附注：Raycast 同时明确**排除了 Tauri**（"gives you less control on the native side"，且当时不愿押注年轻框架），选择自研原生壳。本项目范围只是单窗口启动器，对原生侧控制力的要求低得多，Tauri 的性价比明显更高——这是有意识的取舍，不是遗漏。
+
 ## Decision
 
 v1 采用**不透明窗口**，毛玻璃观感用 DOM 绘制：深色半透明渐变作为基底、内阴影 + 细边框，对面板内部元素轻模糊，营造"哑光"质感，**不追求真正模糊桌面**。
 
 - 常驻后台（唤醒）模型：仅唤出时显示。
 - 补偿手段：置顶（`alwaysOnTop`）+ `skipTaskbar` + 失焦（`Focused(false)`）隐藏，保持"来去如风"的使用感。
+- 圆角不靠窗口透明：`decorations: false` + `shadow: true` 由系统在 Win11 上给出圆角与 1px 描边，**不需要 `transparent: true`**。
 
 ## Consequences
 
 - ✅ 规避全部 Windows 透明/合成伪影与焦点问题；渲染稳定、性能佳。
+- ✅（修订补）不透明还有一个附带好处：窗口背景色可直接声明（见配套实践 1），冷启动无白闪。
 - ⚠️ 观感为"哑光"，非真正模糊桌面——与 Raycast 的丙烯酸质感有差距。
-- 🔄 若二期要上真 Acrylic，需重做渲染层（改透明 + DWM 整合），成本明显——因此记录为 ADR。
+- ⚠️（修订补）**所有浮层都出不了窗口边界**：右键菜单等只能 clamp 回窗口内，靠近边缘时会离开光标位置。这是本决策最实在的一项代价。
+- 🔄 若二期要上真 Acrylic，需重做渲染层（改透明 + DWM 整合），成本明显——因此记录为 ADR。Raycast 的经验表明即使有专职原生团队，这也是"精细配合"级别的活，不是配置开关。
+
+## 已落地的配套实践（2026-09-09）
+
+这些是在"不透明 + 常驻后台"模型下必须补的洞，已实现，改动时请一并维护：
+
+1. **`backgroundColor: "#05060A"`（`tauri.conf.json`）**
+   不透明窗口下 WebView2 的初始化背景默认白色，与近黑主题反差极大，冷启动会闪一下白矩形。显式声明主题色即可消除。
+
+2. **隐藏时复位，而不是唤醒时复位（`resetForNextWake()`）**
+   后端 `toggle_window` 是 `show()` 之后才 `emit("wake")`，前端收到 IPC 再重绘至少要一个事件循环——这一帧用户会看到**上一次的搜索结果 + 上一次的窗口高度**，然后才塌回空态。
+   改为在 `hide()` 之后立刻复位（此刻窗口已隐藏，重排不可见），`show()` 出来的第一帧天然是干净的。`wake` 事件里再补一次，覆盖"窗口还可见就被再次唤起"的情形。
+   这与 Raycast 用 `_doAfterNextPresentationUpdate` 消除 "flash of stale content" 是同一类问题。
+
+3. **`minimumWebview2Version: "120.0.0.0"`（`bundle.windows`）**
+   用系统 WebView2 意味着不同机器版本不可控，渲染行为与 API 可用性会有差异。显式钉住最低版本，安装器负责拦住过老的运行时。
+
+4. **唤起链路上的其它 WebView 陷阱**
+   WebKit/Chromium 会对"不可见"的窗口降频节流；窗口尺寸动画期间也可能暂停绘制。本项目目前靠"隐藏即复位 + 显示前内容已就绪"规避了最明显的那一类，若将来加入动画展开或后台刷新，需重新评估节流问题。
 
 ## 备选路径（均未采用）
 
 - 透明窗口 + CSS `backdrop-filter`：对桌面无效，已否定。
 - 真透明 + DWM Acrylic：复杂度高、与透明窗口冲突，留二期评估。
+- **原生右键菜单（2026-09-09 实验，已回退）**：改用 `Menu::popup_at` 弹出系统菜单，确实解决了"越出窗口边界"，但代价是菜单变成 Windows 原生灰白样式，与 neon 主题割裂；另外原生菜单是阻塞调用，与"失焦即隐藏"产生竞态（菜单关闭后不会再有失焦事件，窗口会赖着不走）。结论：**越界能力与视觉一致性二选一**，当前选择后者。
+- **把菜单放进独立 frameless 小窗口**：唯一能同时拿到"自定义样式 + 越出边界"的方案。但圆角需要窗口透明，与本 ADR 的决策直接冲突；真要做应另起一份 ADR 重新评估，不在本决策范围内。
+
+## 修订记录
+
+| 日期 | 内容 |
+| --- | --- |
+| 2026-09-05 | 初版：决定不透明窗口 + DOM 哑光毛玻璃 |
+| 2026-09-09 | 补充"WebView 是封闭盒子"这一根因；引入 Raycast 2.0 技术披露作为外部佐证；记录 `backgroundColor`、隐藏时复位、WebView2 版本基线三项配套实践；记录原生菜单实验与回退结论 |

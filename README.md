@@ -1,7 +1,6 @@
-
 <div align="center">
 
-  <!-- Logo / Header Banner -->
+  <!-- Logo -->
   <a href="https://github.com/yuanqiangwang/x-on">
     <img src="https://raw.githubusercontent.com/yuanqiangwang/x-on/main/docs/assets/logo.png" alt="xon Logo" width="100" height="100" onError="this.style.display='none'">
   </a>
@@ -9,9 +8,9 @@
   <h1 align="center">xon</h1>
 
   <p align="center">
-    <strong>⚡️ A Neon-Geek, Blazing-Fast Windows App Launcher Built with Tauri v2 & TypeScript.</strong>
+    <strong>面向中文环境的 Windows 应用启动器 —— 专注拼音搜索，按键即达。</strong>
     <br />
-    <em>Ultra-lightweight, zero-latency window auto-resizing, and intelligent pinyin fuzzy matching.</em>
+    <em>基于 Tauri v2 与原生 TypeScript 构建：轻量、零延迟自适应窗口、深度中文拼音匹配。</em>
   </p>
 
   <!-- Badges -->
@@ -22,131 +21,179 @@
   </p>
 
   <p align="center">
-    <a href="#-key-features">Key Features</a> •
-    <a href="#-architecture">Architecture</a> •
-    <a href="#-matcher-algorithm">Matcher Engine</a> •
-    <a href="#-quick-start">Quick Start</a> •
-    <a href="#%EF%B8%8F-keyboard-shortcuts">Shortcuts</a>
+    <a href="#核心特性">核心特性</a> •
+    <a href="#中文优先">中文优先</a> •
+    <a href="#性能">性能</a> •
+    <a href="#系统架构">系统架构</a> •
+    <a href="#匹配引擎">匹配引擎</a> •
+    <a href="#快速开始">快速开始</a> •
+    <a href="#快捷键">快捷键</a>
   </p>
 
   ---
 </div>
 
-## 💡 What is xon?
+## xon 是什么
 
-**xon** is a minimalist, ultra-fast application launcher designed specifically for Windows power users[cite: 1, 3]. Built on top of **Tauri v2** and optimized vanilla TypeScript, **xon** delivers a classic "terminal-green" geek aesthetic with sub-millisecond response times, zero-latency window auto-sizing, and deep Chinese Pinyin matching capabilities[cite: 1, 2, 3].
+xon 是一款为中文 Windows 环境设计的极速应用启动器。
 
-> *"Press `Alt + Space`, type a few letters, hit Enter — launch anything instantly."*
+按下 `Alt + Space` 唤出面板，输入几个字母或拼音，回车即可启动 —— 开始菜单程序、便携应用、系统设置、命令行工具，都在同一个入口里。
 
-<br />
+它的目标只有一个：**把「打开一个程序」这件事做到最快**。为此它没有扩展系统、没有账号、没有联网，也不依赖任何前端框架。
 
-## ✨ Key Features
+> *输入 `jsq` 就能打开「计算器」，输入 `wx` 就能打开「微信」。*
 
-- **⚡ Blazing Fast Search Engine:** Custom multi-tier matching supporting Chinese characters, full Pinyin, initial acronyms, and aliases[cite: 1, 2].
-- **🎯 Exact-Word Homophone Suppression:** Smart literal-match priority that eliminates irrelevant pinyin candidates when exact Chinese characters are typed[cite: 2].
-- **🎨 Neon-Geek UI & Font Customization:** High-contrast `#05060a` dark background paired with terminal green accents (`#3dff9e`) and customizable user fonts[cite: 1, 3].
-- **📐 Dynamic Zero-Jitter Window Sizing:** Pixel-perfect programmatic window height adjustments calculated on the fly without UI layout shifts[cite: 1, 3].
-- **🖼️ Smart Batch Icon Extraction & Emoji Fallbacks:** Parallel IPC batch extraction for application icons with retries, and high-DPI Segoe UI Emoji fallbacks for system settings URIs[cite: 1, 3].
-- **🛡️ Native Windows Integration:** Right-click context menus for "Run as Administrator" and "Open File Location", background blur-hide, and single-instance wake hooks[cite: 1, 3].
+## 中文优先
 
-<br />
+这是 xon 与主流启动器最根本的区别。
 
-## 🏗️ System Architecture
+Raycast、PowerToys Run、Flow Launcher 等产品以英文环境为第一目标：它们对中文应用的匹配基本停留在**字面子串**层面，中文用户的真实输入习惯被系统性地忽略了。xon 针对中文环境重新设计了整套匹配逻辑：
+
+- **拼音输入直达应用。** 「微信」可用 `wx`、`weixin` 命中；「钉钉」可用 `dd`、`dingding` 命中。搜索框里不需要先想清楚应用的中文全名。
+- **全拼、首字母、词首字母三路并行。** 分别覆盖 `googlechrome`、`gc`、`g-chrome` 这类不同习惯的输入。
+- **同音词抑制。** 输入具体汉字时（如「钉钉」），同名拼音的无关候选（如「丁丁」）会被抑制，不再污染结果列表。
+- **本地化名称补英文别名。** Windows 的中文条目只有中文显示名（如「控制面板」），xon 会自动补上英文别名，`control panel`、`calc`、`devmgmt.msc` 均可用英文命中。
+- **系统功能与 PATH 命令一并纳入。** 「此电脑」「回收站」等 shell 项，以及 37 条系统命令（设备管理器、磁盘管理、远程桌面等）都在索引内，多数并非开始菜单直接提供。
+
+一句话：**面向中文环境、并以此为前提做设计**，而不是把英文产品加一层中文翻译。
+
+## 核心特性
+
+- **中文拼音搜索** —— 自定义多级匹配，支持汉字、全拼、首字母、词首字母与别名。
+- **同音抑制** —— 输入确切汉字时优先字面命中，剔除无关拼音候选。
+- **零抖动自适应窗口** —— 按结果行数逐像素调整高度，无边框、无重排闪烁。
+- **批量图标提取与降级** —— 通过 IPC 批量并行提取应用图标并自动重试；系统项降级为主题化 emoji，避免单调的白色文档图标。
+- **原生 Windows 集成** —— 右键「以管理员身份运行」「打开文件所在的位置」，失焦自动隐藏，单实例唤出。
+- **精简技术栈** —— Tauri v2 后端 + 手写 DOM/TypeScript 前端，无框架、无 UI 库、无 CSS 框架。
+
+## 性能
+
+以下数据由 `npm run bench` 生成。该脚本完全从外部驱动 xon —— 注入合成按键并轮询 Win32 窗口，应用内部无任何埋点，因此同一套流程也可用于横向对比其他启动器。各指标的边界见 [`benchmarks/README.md`](benchmarks/README.md)。
+
+_测量于 2026-09-10，Windows 11 家庭版（Intel Core Ultra 7 255H，32 GB），release 构建 `0.6.0`，在空闲机器上经由其注册的全局热键唤起。黑盒测量：合成按键 → Win32 窗口轮询，p50/p95 分别取 25 与 15 次样本。完整环境与原始样本见 `benchmarks/results/latest.md`。_
+
+<!-- benchmarks:start -->
+
+| 指标 | xon 0.6.0 |
+| --- | --- |
+| 热键 → 窗口可见（p50） | 8.9 ms |
+| 热键 → 窗口可见（p95） | 14.6 ms |
+| 按键 → 结果呈现（p50） | 63.3 ms |
+| 按键 → 结果呈现（p95） | 72.5 ms |
+| 冷启动 → 可用 | n/a |
+| 内存，闲置（私有） | 276.7 MB |
+| 内存，闲置（工作集） | 523.6 MB |
+| 闲置 CPU 占用 | 0.10 % |
+| 安装包体积 | 1.58 MB |
+
+<!-- benchmarks:end -->
+
+两项预算分开计量，因为它们是两个不同的问题：**热键 → 可见**（面板出现的速度）与**按键 → 结果**（输入时用户实际感受到的延迟，包含输入防抖、列表重建与图标回传，通常慢数倍）。
+
+在约 66 ms 的按键延迟中，约 40 ms 来自 `src/main.ts` 中有意设置的输入防抖；真正的过滤 + 渲染 + 自适应调整约为 27 ms。该防抖是可调参数而非下限 —— 它的作用是让快速连续输入只触发一次渲染，而不是每次按键都渲染。
+
+## 系统架构
 
 ```mermaid
 flowchart TD
     subgraph Frontend [Tauri Webview / TS Frontend]
-        Input[Search Field - #search] -->|Debounced Input 40ms| Matcher[AppMatcher Engine]
-        Matcher -->|7-Tier Scored List| Render[Dynamic DOM Renderer]
-        Render -->|Calculate Content Height| WinAPI[LogicalSize Window Fit]
-        Render -->|Batch Micro-IPC| IconCache[Batch Icon Loader & Retry Queue]
+        Input[搜索框 - #search] -->|40ms 输入防抖| Matcher[AppMatcher 匹配引擎]
+        Matcher -->|7 级评分列表| Render[动态 DOM 渲染器]
+        Render -->|计算内容高度| WinAPI[LogicalSize 窗口自适应]
+        Render -->|批量 IPC| IconCache[批量图标加载与重试队列]
     end
 
     subgraph Backend [Rust Core / Windows Native API]
-        BackendScan[App Scanner / Registry Watcher] -->|AppInfo Snapshot| Matcher
+        BackendScan[应用扫描 / 注册表监听] -->|AppInfo 快照| Matcher
         IconCache -->|get_app_icons IPC| WinExtract[SHGetFileInfoW / ExtractIcon]
-        Render -->|Alt+Num / Enter / Ctrl+Enter| Launch[App Execution & Admin Privileges]
+        Render -->|Alt+数字 / Enter / Ctrl+Enter| Launch[应用启动与管理员权限]
     end
 
     style Input fill:#0a0d12,stroke:#3dff9e,color:#3dff9e
     style Matcher fill:#0a0d12,stroke:#3dff9e,color:#e6f2ea
     style Render fill:#0a0d12,stroke:#3dff9e,color:#e6f2ea
     style WinAPI fill:#0a0d12,stroke:#3dff9e,color:#3dff9e
-
 ```
 
-## 🔍 Matching & Ranking Engine (`AppMatcher`)
+## 匹配引擎
 
-**xon** features a tailored 7-tier scoring algorithm that processes both display names and alternative system aliases in a single pass:
-
-```
-Tier 1: Exact Name Match          (e.g., "cmd" -> "cmd")
-Tier 2: Name Prefix Match         (e.g., "post" -> "Postman")
-Tier 3: Full Pinyin Prefix        (e.g., "dingding" -> "钉钉")
-Tier 4: Word Initials Prefix      (e.g., "gc" -> "Google Chrome")
-Tier 5: Pinyin Acronym Prefix     (e.g., "dd" -> "钉钉")
-Tier 6: Substring / Full Search   (e.g., "panel" -> "Control Panel")
-Tier 7: Fuzzy Subsequence Match   (e.g., "vsc" -> "Visual Studio Code")
+xon 采用定制的 7 级评分算法，对显示名与系统别名在一次遍历中同时评分：
 
 ```
+第 1 级：名称精确匹配          （如 "cmd" -> "cmd"）
+第 2 级：名称前缀匹配          （如 "post" -> "Postman"）
+第 3 级：全拼前缀匹配          （如 "dingding" -> "钉钉"）
+第 4 级：词首字母匹配          （如 "gc" -> "Google Chrome"）
+第 5 级：拼音首字母匹配        （如 "dd" -> "钉钉"）
+第 6 级：子串 / 全名包含       （如 "panel" -> "控制面板"）
+第 7 级：模糊子序列匹配        （如 "vsc" -> "Visual Studio Code"）
+```
 
-## ⌨️ Keyboard Shortcuts & Controls
+匹配策略全部集中在 `src/matcher.ts` 这一「深模块」中：对外仅暴露 `index()` 与 `search()`，评分逻辑可独立、确定性地进行单元测试。
 
+## 快捷键
 
-| Shortcut | Action | Description |
+| 快捷键 | 动作 | 说明 |
 | --- | --- | --- |
-| **`Alt + Space`** | **Wake Launcher** | Global shortcut to bring **xon** to front
-| **`↑` \/ `↓`** | **Navigate Results** | Cycle through matching candidates
-| **`Enter`** | **Launch Selected** | Execute target application or system URI
-| **`Ctrl + Enter`** | **Run as Administrator** | Launch selected application with elevated privileges
-| **`Alt + 1..9, 0`** | **Quick Launch** | Instantly launch result at position 1 to 10
-| **`Esc`** | **Dismiss / Hide** | Close context menu or hide launcher window
+| **`Alt + Space`** | **唤出启动器** | 将 xon 带到前台（默认全局快捷键，可配置） |
+| **`↑` / `↓`** | **切换结果** | 在候选中上下移动 |
+| **`Enter`** | **启动选中项** | 执行目标应用或系统 URI |
+| **`Ctrl + Enter`** | **以管理员身份运行** | 提权启动选中的应用 |
+| **`Alt + 1..9, 0`** | **快速启动** | 直接启动第 1 至第 10 项结果 |
+| **`Esc`** | **关闭 / 隐藏** | 关闭右键菜单或隐藏启动器窗口 |
 
+## 快速开始
 
-## 🚀 Quick Start
+### 环境要求
 
-### Prerequisites
+* [Node.js](https://nodejs.org/)（v18+）
+* [Rust](https://www.rust-lang.org/)（Tauri v2 所需）
+* WebView2 运行时（Windows 10/11 已预装）
 
-* [Node.js](https://nodejs.org/) (v18+)
-* [Rust](https://www.rust-lang.org/) (Tauri v2 requirement)
-
-### Installation & Development
+### 安装与开发
 
 ```bash
-# 1. Clone the repository
-git clone [https://github.com/yuanqiangwang/x-on.git](https://github.com/yuanqiangwang/x-on.git)
+# 1. 克隆仓库
+git clone https://github.com/yuanqiangwang/x-on.git
 cd x-on
 
-# 2. Install frontend dependencies
+# 2. 安装前端依赖
 pnpm install
 
-# 3. Run in Tauri development mode
+# 3. 以开发模式运行
 pnpm tauri dev
-
 ```
 
-### Build for Production
+### 构建发布版
 
 ```bash
 pnpm tauri build
-
 ```
 
-## ⚙️ Configuration (`settings.json`)
+构建产物位于 `src-tauri/target/release/`，同时生成 NSIS 安装包。
 
-Customize fonts and candidate limits on the fly without restarting:
+## 配置
 
-```json
+配置文件位于 `%APPDATA%\com.xon.launcher\settings.json`，支持随时修改 `font` 与 `resultRows` 而无需重启：
+
+```jsonc
 {
-  "accelerator": "Alt+Space",
-  "autostart": true,
-  "font": "JetBrains Mono NF",
-  "resultRows": 6
+  "accelerator": "Alt+Space",  // 全局快捷键，仅启动时读取，修改后需重启
+  "autostart": true,           // 开机自启
+  "font": "JetBrains Mono NF", // 界面字体
+  "resultRows": 6              // 最大结果行数
 }
-
 ```
 
-## 📄 License
+便携应用清单独立存放于同目录下的 `apps.json`，可通过托盘菜单「添加便携应用」维护。
 
-This project is licensed under the [MIT License](https://www.google.com/search?q=LICENSE).
+## 许可
 
+本项目基于 [MIT License](LICENSE) 开源。
+
+## 相关文档
+
+- [`CONTEXT.md`](CONTEXT.md) —— 领域词汇表（扫描根、便携应用、AppInfo、去重、唤出等）。
+- [`docs/adr/0001-opaque-window-with-dom-glass.md`](docs/adr/0001-opaque-window-with-dom-glass.md) —— 窗口为何不透明，以及 Windows 毛玻璃的取舍。
+- [`docs/roadmap.md`](docs/roadmap.md) —— 路线图与明确的「不做」清单。
+- [`benchmarks/README.md`](benchmarks/README.md) —— 性能测量协议与指标解读。

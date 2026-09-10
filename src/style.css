@@ -89,7 +89,6 @@
         border-left: 2px solid transparent;
         border-radius: 0 4px 4px 0;
         color: var(--text);
-        cursor: pointer;
       }
       /* 悬停必须比选中弱一档，否则"选中了哪一行"看不出来（去色后更明显）。
          写在 .active 之前，悬停才不会反过来盖掉选中态。 */
@@ -197,6 +196,5 @@
         border-radius: 4px;
         color: var(--text);
         white-space: nowrap;
-        cursor: pointer;
       }
       #ctxmenu .item:hover { background: var(--accent-faint); color: var(--accent); }
