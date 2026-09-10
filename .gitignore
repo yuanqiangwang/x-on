@@ -3,4 +3,9 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 *.log
+
+# Quarto 渲染 README 生成的 HTML 产物
+README.html
+README_files/
+
 CODEBUDDY.md

@@ -24,7 +24,6 @@
     <a href="#核心特性">核心特性</a> •
     <a href="#中文优先">中文优先</a> •
     <a href="#性能">性能</a> •
-    <a href="#系统架构">系统架构</a> •
     <a href="#匹配引擎">匹配引擎</a> •
     <a href="#快速开始">快速开始</a> •
     <a href="#快捷键">快捷键</a>
@@ -68,7 +67,7 @@ Raycast、PowerToys Run、Flow Launcher 等产品以英文环境为第一目标�
 
 ## 性能
 
-以下数据由 `npm run bench` 生成。该脚本完全从外部驱动 xon —— 注入合成按键并轮询 Win32 窗口，应用内部无任何埋点，因此同一套流程也可用于横向对比其他启动器。各指标的边界见 [`benchmarks/README.md`](benchmarks/README.md)。
+以下数据由 `pnpm bench` 生成。该脚本完全从外部驱动 xon —— 注入合成按键并轮询 Win32 窗口，应用内部无任何埋点，因此同一套流程也可用于横向对比其他启动器。各指标的边界见 [`benchmarks/README.md`](benchmarks/README.md)。
 
 _测量于 2026-09-10，Windows 11 家庭版（Intel Core Ultra 7 255H，32 GB），release 构建 `0.6.0`，在空闲机器上经由其注册的全局热键唤起。黑盒测量：合成按键 → Win32 窗口轮询，p50/p95 分别取 25 与 15 次样本。完整环境与原始样本见 `benchmarks/results/latest.md`。_
 
@@ -92,28 +91,6 @@ _测量于 2026-09-10，Windows 11 家庭版（Intel Core Ultra 7 255H，32 GB�
 
 在约 66 ms 的按键延迟中，约 40 ms 来自 `src/main.ts` 中有意设置的输入防抖；真正的过滤 + 渲染 + 自适应调整约为 27 ms。该防抖是可调参数而非下限 —— 它的作用是让快速连续输入只触发一次渲染，而不是每次按键都渲染。
 
-## 系统架构
-
-```mermaid
-flowchart TD
-    subgraph Frontend [Tauri Webview / TS Frontend]
-        Input[搜索框 - #search] -->|40ms 输入防抖| Matcher[AppMatcher 匹配引擎]
-        Matcher -->|7 级评分列表| Render[动态 DOM 渲染器]
-        Render -->|计算内容高度| WinAPI[LogicalSize 窗口自适应]
-        Render -->|批量 IPC| IconCache[批量图标加载与重试队列]
-    end
-
-    subgraph Backend [Rust Core / Windows Native API]
-        BackendScan[应用扫描 / 注册表监听] -->|AppInfo 快照| Matcher
-        IconCache -->|get_app_icons IPC| WinExtract[SHGetFileInfoW / ExtractIcon]
-        Render -->|Alt+数字 / Enter / Ctrl+Enter| Launch[应用启动与管理员权限]
-    end
-
-    style Input fill:#0a0d12,stroke:#3dff9e,color:#3dff9e
-    style Matcher fill:#0a0d12,stroke:#3dff9e,color:#e6f2ea
-    style Render fill:#0a0d12,stroke:#3dff9e,color:#e6f2ea
-    style WinAPI fill:#0a0d12,stroke:#3dff9e,color:#3dff9e
-```
 
 ## 匹配引擎
 

@@ -1,0 +1,3 @@
+# esbuild 的 postinstall 需要放行（pnpm 默认拦截依赖的构建脚本）。
+allowBuilds:
+  esbuild: true

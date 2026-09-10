@@ -49,15 +49,15 @@ pwsh -File benchmarks/bench.ps1 -SkipIdle           # skip the 30 s+ idle window
 pwsh -File benchmarks/bench.ps1 -UpdateReadme       # splice the table into README.md
 ```
 
-Or via npm:
+Or via pnpm:
 
 ```bash
-npm run bench
+pnpm bench
 ```
 
 ### Prerequisites
 
-1. **A release build.** `npm run tauri build` first. Debug builds are
+1. **A release build.** `pnpm tauri build` first. Debug builds are
    unrepresentative — WebView2 runs with different JIT and dev-server
    behaviour, and the numbers will not match what ships.
 2. **xon already running**, or pass `-ExePath` and the script starts it.

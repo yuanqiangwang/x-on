@@ -168,7 +168,7 @@ Windows 上 Tauri 的 webview 跟随窗口尺寸，无法完全照搬（真要�
 > **任何性能主张，必须有一条能把它重新打印出来的命令。**
 
 - 测量方式见 [`benchmarks/README.md`](../benchmarks/README.md)，命令是
-  `npm run bench`。
+  `pnpm bench`。
 - 两个预算是分开的：**hotkey → visible** 和 **keystroke → results**。后者包含
   40 ms debounce + 全量列表重建 + 图标 IPC 回灌（`src/main.ts:347`），通常比前者
   慢数倍——**用户搜索时感受到的是后者**。只优化前者对体感毫无帮助。
@@ -219,4 +219,4 @@ Windows 上跑 webview UI 的固定税——换任何前端框架都改变不了
    冷合成，改动小。
 4. 第二章的 #1~#4（计算器 / URL / 路径 / 系统命令）。
 5. 第二章的 #5（频率权重排序）。
-6. 每步之后重跑 `npm run bench` 对比，别凭感觉判断"变快了"。
+6. 每步之后重跑 `pnpm bench` 对比，别凭感觉判断"变快了"。
