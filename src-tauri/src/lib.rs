@@ -294,10 +294,7 @@ fn parse_lnk(path: &Path) -> AppInfo {
         vec![]
     };
 
-    let target_path = lnk::ShellLink::open(path, lnk::encoding::WINDOWS_1252)
-        .ok()
-        .and_then(|s| s.link_target())
-        .unwrap_or_default();
+    let target_path = resolve_lnk_target(path).unwrap_or_default();
 
     AppInfo {
         name,
@@ -353,6 +350,84 @@ fn shell_display_name(_path: &Path) -> Option<String> {
     None
 }
 
+/// 用 Shell 解析一个 `.lnk` 的目标路径 —— 「打开文件所在的位置」与按目标去重都依赖它。
+///
+/// 为什么不用 `lnk` crate：它只读 `LINK_INFO` 结构，而大量开始菜单快捷方式把目标放在
+/// `LINK_TARGET_ID_LIST` 里（钉钉、文件资源管理器…），`lnk` 只能返回空；且它按
+/// WINDOWS-1252 解码中文路径会解成乱码。Shell 的 `IShellLinkW::GetPath` 两条路都走，
+/// 并回传真正的 Unicode 路径（含中文/非 ASCII 也正确）。
+///
+/// 解析失败返回 `None`：没有文件目标的 shell 命名空间项（如「控制面板」`::{CLSID}`）
+/// 本就无路径可定位，调用方回退到 `.lnk` 自身。
+///
+/// COM 公寓：复用调用线程已有的公寓，只 `CoUninitialize` 自己开的那个（与 store.rs /
+/// icons.rs 同）。`resolve_lnk_target` 会在索引重建时对每个 `.lnk` 各调一次。
+#[cfg(windows)]
+fn resolve_lnk_target(path: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows::core::{Interface, PCWSTR};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED, IPersistFile, STGM_READ,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        // RPC_E_CHANGED_MODE (0x80010106)：线程已有别的公寓模型，它照样能服务 COM。
+        let ready = hr.is_ok() || hr.0 == 0x8001_0106u32 as i32;
+        if !ready {
+            return None;
+        }
+        let owned = hr == windows::core::HRESULT(0);
+
+        let result = (|| -> Option<String> {
+            let link: IShellLinkW =
+                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+            let file: IPersistFile = link.cast().ok()?;
+            let wide: Vec<u16> = path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            file.Load(PCWSTR(wide.as_ptr()), STGM_READ).ok()?;
+
+            // 65536 u16 (128 KiB) 上堆，长路径也够。pfd 传 null：只需要路径本身。
+            // flags = 0 → 由 Shell 展开环境变量，得到可直接定位的真实路径。
+            let mut buf = vec![0u16; 65536];
+            link.GetPath(&mut buf, std::ptr::null_mut(), 0).ok()?;
+            let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            let s = String::from_utf16_lossy(&buf[..end]);
+            let s = s.trim();
+            if s.is_empty() { None } else { Some(s.to_string()) }
+        })();
+
+        if owned {
+            CoUninitialize();
+        }
+        result
+    }
+}
+
+#[cfg(not(windows))]
+fn resolve_lnk_target(_path: &Path) -> Option<String> {
+    None
+}
+
+/// 帮助文件扩展名：指向它们的快捷方式只是文档入口（`.chm` 编译帮助、`.hlp` 旧式
+/// WinHelp），不是可启动的应用。开始菜单里这类快捷方式常以产品名命名（不含
+/// JUNK_KEYWORDS 里的 doc 关键词），靠关键字拦不住，只能按解析出的目标扩展名判。
+const HELP_TARGET_EXTS: &[&str] = &["chm", "hlp"];
+
+/// 目标是指向帮助文件的快捷方式（按扩展名判，见 `HELP_TARGET_EXTS`）。
+fn is_help_target(target_path: &str) -> bool {
+    Path::new(target_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| HELP_TARGET_EXTS.iter().any(|h| e.eq_ignore_ascii_case(h)))
+}
+
 /// True when a shortcut looks like noise (uninstaller / help / updater). Checks
 /// the shortcut name and the target's file name so we never match on a folder in
 /// the path (e.g. "C:\...\update\app.exe" stays).
@@ -368,7 +443,7 @@ fn is_junk(name: &str, target_path: &str) -> bool {
 /// True when a shortcut's target still looks like a live local resource.
 /// "Invalid" means the target parses to a *local absolute path* that no longer
 /// exists on disk. Deliberately NOT dropped (return true):
-///   - empty target (link_target() failed) — the .lnk may still launch;
+///   - empty target (Shell 解析失败) — the .lnk may still launch;
 ///   - UNC / network-share paths (\\server\share, //server/share) — a local
 ///     existence check would be slow and flaky (offline == falsely missing);
 ///   - relative / no-drive paths (incl. %ENV%) — Shell expands these;
@@ -387,20 +462,22 @@ fn link_is_valid(target: &str) -> bool {
     if p.is_relative() {
         return true;
     }
-    // 本地绝对路径：仅当纯 ASCII 且确认不存在时才判为失效。含非 ASCII（真实中文路径，
-    // 或 lnk crate 用 WINDOWS-1252 解码 UTF-8 产生的乱码 ÎÐÅ…）时无法可靠判断存在性，
-    // 宽容保留——避免误杀安装在中文路径下的应用（如 微信开发者工具）。
+    // 本地绝对路径：含非 ASCII（真实中文/日文等路径）时宽容保留 —— 这类路径的存在性
+    // 判断偶有环境差异，一律放过，避免误杀装在非 ASCII 路径下的应用（如 微信开发者工具）。
+    // 纯 ASCII 目标仍做存在性校验，及时清掉已卸载的条目。
     if !target.is_ascii() {
         return true;
     }
     p.exists()
 }
 
-/// True when a Start-Menu shortcut should not be indexed: install/uninstall noise,
-/// or its local target no longer exists (宽松：网络 / 解析失败 / 相对路径保留，见
-/// link_is_valid). One named place for the drop policy of a start-menu entry.
+/// True when a Start-Menu shortcut should not be indexed: help-file targets, install/
+/// uninstall noise, or a local target that no longer exists (宽松：网络 / 解析失败 /
+/// 相对路径保留，见 link_is_valid). One named place for the drop policy of an entry.
 fn drop_shortcut(a: &AppInfo) -> bool {
-    is_junk(&a.name, &a.target_path) || !link_is_valid(&a.target_path)
+    is_help_target(&a.target_path)
+        || is_junk(&a.name, &a.target_path)
+        || !link_is_valid(&a.target_path)
 }
 
 /// 名字去重的规范化键：忽略大小写与所有空白。同一程序在开始菜单（`.lnk` 的 shell
@@ -508,6 +585,46 @@ fn build_index(app: &AppHandle) -> Vec<AppInfo> {
     crate::commands::apply_commands(&mut apps);
 
     apps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, target: &str) -> AppInfo {
+        AppInfo {
+            name: name.to_string(),
+            comment: None,
+            launch_path: r"C:\x\app.lnk".to_string(),
+            target_path: target.to_string(),
+            icon: None,
+            aliases: Vec::new(),
+        }
+    }
+
+    /// 指向 `.chm` / `.hlp` 帮助文档的快捷方式要按扩展名识别为噪音（大小写不敏感），
+    /// 正常可执行目标不能误伤。
+    #[test]
+    fn help_file_targets_are_junk() {
+        for t in [
+            r"C:\Program Files\App\help.chm",
+            r"C:\App\readme.HLP",
+            r"D:\docs\manual.Chm",
+        ] {
+            assert!(is_help_target(t), "应识别为帮助文件: {t}");
+        }
+        for t in [r"C:\App\app.exe", r"C:\Windows\System32\devmgmt.msc", ""] {
+            assert!(!is_help_target(t), "不应识别为帮助文件: {t}");
+        }
+
+        // 端到端：一个真实存在、名字/target 都不含其他 JUNK 关键词的 .chm 会被
+        // drop_shortcut 丢弃 —— 证明扩展名过滤确实接进了丢弃策略。
+        let chm = std::env::temp_dir().join("xon_test_abc.chm");
+        std::fs::write(&chm, b"x").unwrap();
+        let t = chm.to_string_lossy().to_string();
+        assert!(drop_shortcut(&entry("XYZ App", &t)));
+        std::fs::remove_file(&chm).ok();
+    }
 }
 
 fn toggle_window(app: &AppHandle) {
@@ -1218,11 +1335,16 @@ fn run_elevated(_path: &str) -> Result<(), String> {
 fn reveal_in_explorer(path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
-        // `explorer /select,<path>` must arrive as ONE argument: Explorer reads the
-        // rest of that token as the path, so splitting flag and path into two args
-        // would silently open "This PC" instead of the folder.
+        use std::os::windows::process::CommandExt;
+
+        // Explorer 不按标准 argv 解析命令行：`/select,<路径>` 必须整体是**一个 token**，
+        // 且路径含空格时只给路径本身加引号（`/select,"C:\Program Files\…"`）。若用 `.arg()`，
+        // Rust 会把整个 token 包成一对引号（`"/select,C:\Program Files\…"`），Explorer 认不出
+        // `/select,` 开关，就退回打开默认的「文档」目录 —— 这正是曾经"打开所在位置不对"的根因。
+        // 所以用 `raw_arg` 自己拼命令行（它只补分隔空格、不再转义）。路径不可能含 `"`，
+        // 直接加引号即可。
         std::process::Command::new("explorer")
-            .arg(format!("/select,{}", path))
+            .raw_arg(format!("/select,\"{}\"", path))
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())

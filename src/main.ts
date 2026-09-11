@@ -302,18 +302,17 @@ function subtitle(a: AppInfo): string | null {
 // ---------------------------------------------------------------------------
 
 /**
- * "打开所在的位置"的目标：优先快捷方式解析出的真实目标（想看的是程序装在哪，而不是
- * 快捷方式放在哪），不可信时回退到条目自身（`.lnk` / 便携 exe）。
+ * "打开文件所在的位置"——定位到条目**自身**：开始菜单 `.lnk`、便携 exe、PATH 命令
+ * 解析出的完整路径，都是磁盘上的真实文件（与 Windows 开始菜单右键的语义一致）。
  *
- * 不可信 = 解析出的目标含非 ASCII：`lnk` crate 按 WINDOWS-1252 解码目标，中文安装路径
- * 会解成乱码（后端 `link_is_valid` 有同样说明），拿它去 Explorer 定位必然落空；而
- * `.lnk` 自身路径来自文件系统、便携路径来自 manifest，都是真 UTF-8。
+ * 有意不用 `targetPath`（快捷方式解析出的目标）：那是"程序装在哪"，而用户要的是
+ * "快捷方式 / 条目在哪"。
+ *
+ * 系统设置 URI（`ms-settings:` / `::{CLSID}`）与商店应用（`store:<AUMID>`）只是激活
+ * 标识，磁盘上没有文件、无位置可开，返回 null —— 调用方据此不显示该菜单项。
  */
 function revealPath(a: AppInfo): string | null {
-  const target = (a.targetPath || "").trim();
-  const trustworthy =
-    /^[\x20-\x7e]*$/.test(target) && !isSystemUri(target) && !isStorePath(target);
-  const p = (trustworthy && target ? target : a.launchPath).trim();
+  const p = a.launchPath.trim();
   return p && !isSystemUri(p) && !isStorePath(p) ? p : null;
 }
 
@@ -328,16 +327,15 @@ function resetForNextWake() {
 
 function openContextMenu(a: AppInfo, x: number, y: number) {
   const items: { label: string; run: () => void }[] = [];
-  if (!isSystemUri(a.launchPath) && !isStorePath(a.launchPath)) {
+  // 没有磁盘位置（系统设置 URI / 商店应用）→ 两项都无意义：不能提权、也无处可开。
+  const location = revealPath(a);
+  if (location) {
     items.push({ label: "以管理员身份运行", run: () => launch(a, true) });
-    const target = revealPath(a);
-    if (target) {
-      items.push({
-        label: "打开文件所在的位置",
-        run: () =>
-          invoke("reveal_in_explorer", { path: target }).catch((e) => console.error(e)),
-      });
-    }
+    items.push({
+      label: "打开文件所在的位置",
+      run: () =>
+        invoke("reveal_in_explorer", { path: location }).catch((e) => console.error(e)),
+    });
   }
   if (items.length === 0) return;
 
