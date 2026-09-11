@@ -15,10 +15,10 @@ Windows 启动器，**借鉴的是渲染与工程方法，不是功能清单。*
 
 ### 1.1 resize 与 paint 对齐 + 失效代次
 
-现状（`src/main.ts:280`）：
+现状（`src/main.ts:440`）：
 
-```280:281:src/main.ts
-  const height = CHROME + (hasQuery ? GAP + rows * ROW_H : 0);
+```440:441:src/main.ts
+  const height = CHROME + (showList ? GAP + rows * ROW_H : 0);
   win.setSize(new LogicalSize(640, height)).catch(() => {});
 ```
 
@@ -32,13 +32,13 @@ DOM 已经同步重建完，但 `setSize` 是异步 IPC → Rust → Win32。窗
 - **resize generation**：每次 resize 领一个递增代号，代号被超越的提交直接丢弃。
   这让"快速输入 / 连续 Esc-唤起"不会打出 `96→N→96` 的回弹。
 
-40 ms 的 input debounce（`src/main.ts:372`）已缓解大部分，但**没解决最后一帧的
+40 ms 的 input debounce（`src/main.ts:550`）已缓解大部分，但**没解决最后一帧的
 同步**——debounce 只减少次数，不保证顺序。
 
 ### 1.2 首帧预热
 
 在 boot 时就预停（park）面板，可以让"第一次唤起"和"第 N 次唤起"走同一条路径。
-xon 目前只预热了 emoji 字体（`src/main.ts:448`），**窗口本身从未被合成过**——
+xon 目前只预热了 emoji 字体（`src/main.ts:652`），**窗口本身从未被合成过**——
 第一次 `Alt+Space` 要和 DWM + WebView2 的首次合成撞在一起。
 
 做法：启动流程末尾加一次 `show()` → `hide()`（或至少一次 `setSize` +
@@ -66,7 +66,7 @@ Windows 上 Tauri 的 webview 跟随窗口尺寸，无法完全照搬（真要�
 
 | # | 候选 | 判断 | 理由 |
 | --- | --- | --- | --- |
-| 1 | **计算器** — 输入 `1+2*3` 直接出结果行 | ✅ 强推 | 纯前端，不碰后端。把公式结果实时写进结果行副标题即可；xon 已有 `subtitle()`（`src/main.ts:143`）这套机制，直接复用 |
+| 1 | **计算器** — 输入 `1+2*3` 直接出结果行 | ✅ 强推 | 纯前端，不碰后端。把公式结果实时写进结果行副标题即可；xon 已有 `subtitle()`（`src/main.ts:287`）这套机制，直接复用 |
 | 2 | **URL / Portal 直达** — 输入含 `.` 或 `http` → 浏览器打开 | ✅ 强推 | 十几行，每天都会用到 |
 | 3 | **路径直达** — `C:\Users\...`、`~` 展开 → 打开 | ✅ 推荐 | 同上，复用已有的 `opener` 链路 |
 | 4 | **PATH 命令检索**（`calc` / `mstsc` / `devmgmt.msc`…） | ✅ **已落地** | 见下方「第五类数据源：PATH 命令」 |
@@ -152,7 +152,7 @@ Windows 上 Tauri 的 webview 跟随窗口尺寸，无法完全照搬（真要�
 
 记录两处**已经做对、不该为了"别人有"而改动**的设计：
 
-- **手写的 `Debouncer`**（`src-tauri/src/lib.rs:924`）。它是阻塞 `recv_timeout(400ms)`，
+- **手写的 `Debouncer`**（`src-tauri/src/lib.rs:972`）。它是阻塞 `recv_timeout(400ms)`，
   空闲时线程完全休眠、零开销；通用的去抖库常以固定间隔空转 tick，空闲时也在
   分配两个 HashMap。**这条不用改。**
 - **`ConfigWatcher.own_write` 防自写回环**（`persist_settings` 记录自身写入文本）
@@ -170,7 +170,7 @@ Windows 上 Tauri 的 webview 跟随窗口尺寸，无法完全照搬（真要�
 - 测量方式见 [`benchmarks/README.md`](../benchmarks/README.md)，命令是
   `pnpm bench`。
 - 两个预算是分开的：**hotkey → visible** 和 **keystroke → results**。后者包含
-  40 ms debounce + 全量列表重建 + 图标 IPC 回灌（`src/main.ts:347`），通常比前者
+  40 ms debounce + 全量列表重建 + 图标 IPC 回灌（`src/main.ts:490`），通常比前者
   慢数倍——**用户搜索时感受到的是后者**。只优化前者对体感毫无帮助。
 - 若某次改动让 p50 变差超过 ~3 ms（轮询分辨率），先看是不是同一个会话、同一台
   机器上的回归，再下结论。
@@ -188,11 +188,11 @@ Windows 11 / Core Ultra 7 255H / xon 0.6.0 release：
 > 已有条目补了英文别名。keystroke p50 与加入前（65.6 ms）持平，证明命令数据源
 > 没有稀释搜索、没有拖慢渲染。
 
-闲置：0.21% CPU；进程组递归 7 个进程，**私有内存 273.1 MB、工作集 520.6 MB**；
+闲置：0.10% CPU；进程组递归 7 个进程，**私有内存 276.7 MB、工作集 523.6 MB**；
 安装器 1.58 MB。
 
-**内存构成值得单独记住**：278 MB 里 xon 主进程只占 **19 MB**，其余 259 MB 是
-六个 `msedgewebview2.exe`。也就是说"轻量"指的是 Rust 侧那 19 MB，WebView2 是
+**内存构成值得单独记住**：276.7 MB 里 xon 主进程只占 **20.6 MB**，其余 256 MB 是
+六个 `msedgewebview2.exe`。也就是说"轻量"指的是 Rust 侧那 20.6 MB，WebView2 是
 Windows 上跑 webview UI 的固定税——换任何前端框架都改变不了它。
 
 含命令数据源后，连跑多次 hotkey p50 稳定于 8–9 ms、keystroke p50 稳定于
@@ -200,20 +200,20 @@ Windows 上跑 webview UI 的固定税——换任何前端框架都改变不了
 
 **基线给出的三个结论，直接决定下面的顺序：**
 
-1. **唤起路径已经不是瓶颈**（8.6 ms）。所以 1.1
+1. **唤起路径已经不是瓶颈**（8.9 ms）。所以 1.1
    （resize 与 paint 对齐）的价值不在"更快"，而在"不抖"——它消除的是偶发的
    空白/裁切帧，不是平均值。1.2（首帧预热）同理：它管的是**第一次**唤起，
    而基线里 25 次唤起是稳态值。
-2. **真正的体感延迟在按键路径**（66.8 ms，约为唤起的 8 倍），其中约 40 ms 是
+2. **真正的体感延迟在按键路径**（63.3 ms，约为唤起的 7 倍），其中约 40 ms 是
    `main.ts` 里固定的 input debounce。**要动体感，先动这里**——比如下调
    debounce，或让首屏 10 行先渲染、图标异步补。
-3. **闲置成本已经很低**（0.31% CPU），不要为它做无谓优化。内存那 278 MB 里
-   259 MB 是 WebView2 的固定开销，不是 xon 能优化的部分。
+3. **闲置成本已经很低**（0.10% CPU），不要为它做无谓优化。内存那 276.7 MB 里
+   256 MB 是 WebView2 的固定开销，不是 xon 能优化的部分。
 
 ## 七、建议的执行顺序
 
 1. ~~跑基线~~ ✅ 已完成，见上。
-2. **按键路径（66.8 ms）**——评估 debounce 从 40 ms 下调，以及图标 IPC 是否阻塞
+2. **按键路径（63.3 ms）**——评估 debounce 从 40 ms 下调，以及图标 IPC 是否阻塞
    首屏渲染。这是唯一能明显改变体感的一项。
 3. 第一章的 1.1 + 1.2（resize 对齐 + 首帧预热）——消除偶发抖动与首次唤起的
    冷合成，改动小。

@@ -21,7 +21,7 @@ across runs.
 | **Keystroke → results** | Summon, let focus settle, send one character, poll `GetWindowRect` until the window grows by ≥ 20 px. Growth is a proxy for "result rows committed and the self-sizing pass ran". | Final pixel flush. It fires when the geometry changes, not when the last row's text is rasterized. It also includes the deliberate 40 ms input debounce in `main.ts`, because that is part of what the user feels. |
 | **Cold start → usable** | Kill xon, launch it, then press the accelerator repeatedly until a window appears. | "Process exists" — deliberately not counted. This measures "double-click → you can type". |
 | **Memory, idle (private)** | Sum of `PrivateMemorySize64` over the **recursive** process tree — the Rust process plus every WebView2 process it spawned — after a settle period with the window hidden. **This is the headline figure**: committed bytes the group owns, with shared pages counted once. | Pages shared with other applications (WebView2 ships as a shared runtime), and any memory the OS has already trimmed. |
-| **Memory, idle (working set)** | Sum of `WorkingSet64` over the same tree. | It **double-counts** physical pages shared between processes, so it reads much higher — 521 MB vs 278 MB private on the baseline machine. Useful only as an upper bound. |
+| **Memory, idle (working set)** | Sum of `WorkingSet64` over the same tree. | It **double-counts** physical pages shared between processes, so it reads much higher — 523.6 MB vs 276.7 MB private on the baseline machine. Useful only as an upper bound. |
 | **CPU while idle** | `Process.CPU` delta over the sampling window, divided by wall time. Percent of one core. | Wakeups/s. A process can idle at 0.1% CPU and still wake hundreds of times a second, which is what actually costs battery. Not measured here (no `powermetrics` equivalent on Windows without ETW). |
 | **Installer size** | The newest artifact under `target/release/bundle/` (NSIS `.exe` or `.msi`); falls back to the bare `xon.exe` if no bundle was built. | The WebView2 runtime, which Windows already provides — so this is *not* comparable to a bundled-Chromium app's on-disk size. |
 
@@ -36,8 +36,8 @@ so the same mistake is not made twice.
   installer is **1.58 MB**.
 - **"Memory" only walked one level of the process tree → 229 MB.** WebView2
   spawns its utility/gpu/renderer processes as *grandchildren*, so a single level
-  captured 2 of 7 processes and missed 289 MB. Recursive walk: **278 MB private /
-  521 MB working set over 7 processes.**
+  captured 2 of 7 processes and missed 289 MB. Recursive walk: **276.7 MB private /
+  523.6 MB working set over 7 processes.**
 
 ## Running it
 
@@ -119,19 +119,19 @@ variable.
 
 As of 2026-09-10 (Windows 11, Core Ultra 7 255H, xon 0.6.0 release):
 
-- **Hotkey is not the bottleneck.** p50 8.6 ms / p95 14.9 ms — comfortably
+- **Hotkey is not the bottleneck.** p50 8.9 ms / p95 14.6 ms — comfortably
   below the ~100 ms threshold a user can perceive as instantaneous. There is
   little left to win here.
-- **Keystroke→results is ~8× slower** (p50 66.8 ms) and is where the perceived
+- **Keystroke→results is ~7× slower** (p50 63.3 ms) and is where the perceived
   latency lives. Roughly 40 ms of that is the fixed input debounce; the rest is
   filter + full list rebuild + icon IPC. **Optimizing the summon path cannot
   improve this number.**
-- **Memory is overwhelmingly WebView2, not xon.** Of 278 MB private at idle,
-  the Rust process accounts for **19 MB**; the other **259 MB** is six
+- **Memory is overwhelmingly WebView2, not xon.** Of 276.7 MB private at idle,
+  the Rust process accounts for **20.6 MB**; the other **256 MB** is six
   `msedgewebview2.exe` processes. That is the unavoidable cost of a webview UI
   on Windows, and it is why "rewrite the frontend in a framework" would change
-  nothing. The number that xon actually controls is the 19 MB.
-- **CPU while idle is ~0.3%.** Fine, and not worth chasing.
+  nothing. The number that xon actually controls is the 20.6 MB.
+- **CPU while idle is 0.10%.** Fine, and not worth chasing.
 
 ## Files
 

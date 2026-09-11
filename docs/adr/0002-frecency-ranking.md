@@ -8,14 +8,15 @@
 
 ### 问题：同层并列时排序是随机的
 
-`matcher.ts` 当前是纯名称打分：7 层 tier（精确 > 名称前缀 > 全拼前缀 > 词首缩写 >
-声母前缀 > 子串 > 子序列），同一 tier 内按 `len`（查询覆盖字段的比例）排序：
+`matcher.ts` **决策前**是纯名称打分：7 层 tier（精确 > 名称前缀 > 全拼前缀 > 词首缩写 >
+声母前缀 > 子串 > 子序列），同一 tier 内按 `len`（查询覆盖字段的比例）排序（当时的
+排序键）：
 
-```144:144:src/matcher.ts
+```ts
     pool.sort((x, y) => x.tier - y.tier || x.len - y.len);
 ```
 
-`len` 也相同时，落到 JS stable sort 的插入序 —— 也就是 `build_index`（`lib.rs:389`）的
+`len` 也相同时，落到 JS stable sort 的插入序 —— 也就是 `build_index`（`lib.rs:412`）的
 爬取序。WalkDir 的顺序取决于文件系统，**实际近似随机**，每次重扫或重启都可能变。
 
 这不是边缘情况，而是拼音首字母查询的常态。输入 `js`：
@@ -99,7 +100,7 @@ frecency 只在 tier 与 len 都相同时才起作用。
 
 ### 7. 键：`launchPath`
 
-与 icon cache（`main.ts:106`）同一把键。已知损耗：`.lnk` 重装后路径可能变、
+与 icon cache（`main.ts:227`）同一把键。已知损耗：`.lnk` 重装后路径可能变、
 便携 exe 移动位置会丢历史。**接受**，不为此加 `targetPath` 回退键。
 
 ### 8. 不做数据库（2026-09-10 评估）
