@@ -142,14 +142,18 @@ struct Config {
     #[serde(default)]
     autostart: bool,
     /// UI font family, mirroring VS Code's editor.fontFamily: a system font name
-    /// the user types into settings.json. Empty means the system default. Only
-    /// `font` is hot-applied when the file is watched.
+    /// the user types into settings.json. Empty means the system default.
     #[serde(default)]
     font: String,
     /// Max results shown in the launcher list; the window height follows it.
-    /// Hot-applied when the file is watched. Default 6.
+    /// Default 6.
     #[serde(default = "Config::default_result_rows")]
     result_rows: usize,
+    /// 主题：`"auto"`（默认，跟随 Windows 应用模式）/ `"light"` / `"dark"`。
+    /// 后端不解释这个值——解析与落地全在前端（`main.ts::applyTheme`），这里只当
+    /// 配置搬运工，顺带把 `settings.json` 的改动热推给窗口。
+    #[serde(default = "Config::default_theme")]
+    theme: String,
 }
 
 impl Default for Config {
@@ -159,6 +163,7 @@ impl Default for Config {
             autostart: false,
             font: String::new(),
             result_rows: Config::default_result_rows(),
+            theme: Config::default_theme(),
         }
     }
 }
@@ -170,6 +175,10 @@ impl Config {
 
     fn default_result_rows() -> usize {
         6
+    }
+
+    fn default_theme() -> String {
+        "auto".to_string()
     }
 }
 
@@ -238,7 +247,9 @@ fn write_default_settings_template(app: &AppHandle) -> Result<(), String> {
   // 界面字体：系统已安装字体名，改后立即生效；留空 = 系统默认字体
   "font": "",
   // 列表最大候选行数：改后立即生效（窗口高度随之自适应）
-  "resultRows": 6
+  "resultRows": 6,
+  // 主题：auto = 跟随 Windows 的浅色/深色；也可固定为 light 或 dark。改后立即生效
+  "theme": "auto"
 }"#;
     persist_settings(app, template)
 }
@@ -1051,6 +1062,23 @@ fn get_config(app: AppHandle) -> Config {
     load_config(&app)
 }
 
+/// 主题切换时同步原生窗口背景色。
+///
+/// 窗口是不透明的（ADR 0001），`resize` 时新露出的那条区域先由窗口背景刷子画，
+/// 若这里仍是近黑，浅色主题下每次高度自适应都会闪一条黑边。`backgroundColor`
+/// 在 `tauri.conf.json` 里只能写死一个值，所以运行时必须由前端同步。
+///
+/// ⚠️ 两个色值须与 `src/style.css` 的 `--bg` 保持一致。
+#[tauri::command]
+fn set_window_background(window: tauri::WebviewWindow, theme: String) {
+    let color = if theme == "light" {
+        tauri::window::Color(242, 245, 241, 255) // #f2f5f1
+    } else {
+        tauri::window::Color(5, 6, 10, 255) // #05060a
+    };
+    let _ = window.set_background_color(Some(color));
+}
+
 /// 全量使用记录快照（`launchPath -> { count, lastUsed }`）。只读不改：把计数换算成
 /// 排序权重是**排序策略**，住在前端的 `matcher.ts`（ADR 0002 第 5 条），后端不做。
 #[tauri::command]
@@ -1284,6 +1312,7 @@ pub fn run() {
             reveal_in_explorer,
             get_app_icons,
             get_config,
+            set_window_background,
             get_usage
         ])
         .setup(|app| {

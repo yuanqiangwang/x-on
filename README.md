@@ -63,6 +63,7 @@ Raycast、PowerToys Run、Flow Launcher 等产品以英文环境为第一目标�
 - **零抖动自适应窗口** —— 按结果行数逐像素调整高度，无边框、无重排闪烁。
 - **批量图标提取与降级** —— 通过 IPC 批量并行提取应用图标并自动重试；系统项降级为主题化 emoji，避免单调的白色文档图标。
 - **原生 Windows 集成** —— 右键「以管理员身份运行」「打开文件所在的位置」，失焦自动隐藏，单实例唤出。
+- **主题跟随系统** —— 默认跟随 Windows 的浅色/深色设置实时切换（终端绿 / 纸白两套），也可在配置里固定一端。
 - **精简技术栈** —— Tauri v2 后端 + 手写 DOM/TypeScript 前端，无框架、无 UI 库、无 CSS 框架。
 
 ## 性能
@@ -151,14 +152,15 @@ pnpm tauri build
 
 ## 配置
 
-配置文件位于 `%APPDATA%\com.xon.launcher\settings.json`，支持随时修改 `font` 与 `resultRows` 而无需重启：
+配置文件位于 `%APPDATA%\com.xon.launcher\settings.json`，支持随时修改 `font`、`resultRows` 与 `theme` 而无需重启：
 
 ```jsonc
 {
   "accelerator": "Alt+Space",  // 全局快捷键，仅启动时读取，修改后需重启
   "autostart": true,           // 开机自启
   "font": "JetBrains Mono NF", // 界面字体
-  "resultRows": 6              // 最大结果行数
+  "resultRows": 6,             // 最大结果行数
+  "theme": "auto"              // 主题：auto = 跟随 Windows 浅色/深色，或固定 light / dark
 }
 ```
 

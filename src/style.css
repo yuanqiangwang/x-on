@@ -3,8 +3,14 @@
          文本三级：强 15:1 / 正文 10:1 / 次级 4.8:1 —— 11px 小字也要过 WCAG AA，
          旧值 #58655c 只有 3.3:1，注释、序号、footer 全都不达标。
          满强度强调色只留给两个焦点：输入行与选中行，其余一律降饱和。
+
+         这里是 **深色（默认）** 主题。浅色主题在下方 `html[data-theme="light"]` 里
+         整组覆盖同名令牌 —— 主题只换颜色值，布局/结构/语义一律不动。由 main.ts 在
+         `<html>` 上写 `data-theme`（并同步原生窗口背景色，见 ADR 0001 配套实践 1）。
+         改这里的 --bg 记得同步 src-tauri 的 set_window_background。
          ------------------------------------------------------------------- */
       :root {
+        color-scheme: dark; /* 原生控件/滚动条/选区跟随主题，别让它们掉回白色 */
         --bg: #05060a;
         --bg-raised: #0a0d12; /* 浮起层（右键菜单） */
         --text: #a7bdae; /* 正文：10:1 */
@@ -17,11 +23,43 @@
         --hover: rgba(167, 189, 174, 0.06); /* 悬停：中性，弱于选中 */
         --border: rgba(167, 189, 174, 0.14); /* 分隔线 / 头像描边 */
         --border-raised: rgba(61, 255, 158, 0.18); /* 浮层描边 */
+        --glow: 0 0 6px var(--accent-dim); /* 选中名的霓虹辉光，浅色主题下关掉 */
+        --shadow-1: rgba(0, 0, 0, 0.5); /* 浮层阴影：紧实 / 扩散两层 */
+        --shadow-2: rgba(0, 0, 0, 0.45);
         /* 默认系统字体；用户可在 settings.json 的 font 字段填任意已装字体名覆盖。 */
         --font: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
         /* 单条候选行高（px），与 main.ts 的 ROW_H 同步，用于窗口高度自适应。
            竖向间距同样由 main.ts 的 CHROME 承载：改下面的 padding/margin 要同步改它。 */
         --row-h: 38px;
+      }
+
+      /* -------------------------------------------------------------------
+         浅色主题：终端绿换成"纸白底 + 深绿"。取舍有三条——
+
+         1. 强调色必须换深绿。满强度 #3dff9e 在纸白上只有 1.2:1，输入行会直接
+            "消失"；#056a3b 对纸白 6.2:1、落在选中行底（浅绿）上仍有 5.4:1，
+            才守得住"输入行 / 选中行是唯一焦点"这条约束。
+         2. 底色用带极淡绿调的 #f2f5f1 而不是纯白：纯白配绿字会"发飘"，也丢了
+            深色主题那点"屏幕感"；浮起层才用纯白，靠投影脱离底色。
+         3. 辉光关掉、阴影换成绿调淡影：深色主题的霓虹与黑影在浅底上都是脏的。
+         ------------------------------------------------------------------- */
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg: #f2f5f1;
+        --bg-raised: #ffffff;
+        --text: #3a4b40; /* 正文：8.5:1 */
+        --text-head: #14201a; /* 结果名：15:1 */
+        --muted: #5b6b60; /* 元信息：5.2:1 */
+        --accent: #056a3b;
+        --accent-dim: rgba(5, 106, 59, 0.32);
+        --accent-faint: rgba(5, 106, 59, 0.09);
+        --accent-row: rgba(5, 106, 59, 0.1);
+        --hover: rgba(58, 75, 64, 0.06);
+        --border: rgba(58, 75, 64, 0.16);
+        --border-raised: rgba(5, 106, 59, 0.22);
+        --glow: none;
+        --shadow-1: rgba(20, 32, 26, 0.16);
+        --shadow-2: rgba(20, 32, 26, 0.14);
       }
       * { box-sizing: border-box; }
       html, body {
@@ -107,6 +145,9 @@
         background: var(--accent-row);
         border-left-color: var(--accent);
       }
+      /* 尺寸/圆角两类头像共用；描边不在这里，它只属于"首字母兜底"（见下）。
+         真实图标（从 .exe 提取，自带不透明底或圆角）和彩色 emoji 都不描边：给它们
+         套 1px 框等于在图标自己的边上再造一层，透明背景的图标更是直接变成空框。 */
       #results li img,
       #results li .avatar {
         width: 24px;
@@ -114,20 +155,24 @@
         border-radius: 4px;
         flex: 0 0 24px;
         object-fit: contain;
-        border: 1px solid var(--border);
         background: transparent;
       }
+      /* 首字母兜底头像：只有一个字母，本身没有形状可言，靠描边把它定成一个"块"。
+         这是唯一需要描边的一类头像。 */
       #results li .avatar {
         display: flex;
         align-items: center;
         justify-content: center;
+        border: 1px solid var(--border);
         color: var(--accent);
         font-weight: 700;
         font-family: var(--font);
       }
       /* 系统功能项：用彩色 emoji 代替通用文档图标。Segoe UI Emoji 负责彩色渲染，
-         放大到接近 24px 满格、line-height 1 不撑高、color inherit 不把 emoji 染成绿色。 */
+         放大到接近 24px 满格、line-height 1 不撑高、color inherit 不把 emoji 染成绿色。
+         emoji 自带颜色和形状，归"真实图标"那一类，同样不描边。 */
       #results li .avatar.emoji {
+        border: none;
         font-family: "Segoe UI Emoji", var(--font);
         font-size: 20px;
         line-height: 1;
@@ -145,7 +190,7 @@
       }
       #results li.active .name {
         color: var(--accent);
-        text-shadow: 0 0 6px var(--accent-dim);
+        text-shadow: var(--glow);
       }
       /* 副标题：本地化名下面的原生名（控制面板 / control panel），见 main.ts subtitle。
          名称与副标题共占一行行高，超长单行截断；meta 的 min-width:0 保证省略号生效。 */
@@ -177,6 +222,10 @@
       /* 空态收起时没有可选的列表，与列表有关的键位提示（↑↓ / ↵ / Ctrl+↵ / Alt+序号）
          都不成立，整组隐藏；列表可见时再换回来。 */
       #footer.empty .hint-list { display: none; }
+      /* 空态下没有列表需要与快捷键条分隔，这条上边框只会和搜索行下划线凑成"两条线夹着
+         一段空白"的空列表错觉 —— 关掉它，让搜索行下划线成为空态唯一的分割线。
+         用 transparent 而非 none：保留 1px 占位，窗口高度常量 CHROME 不必跟着改。 */
+      #footer.empty { border-top-color: transparent; }
 
       /* 自绘右键菜单：webview 自带菜单（重载/检查元素…）在启动器里全是噪音，
          屏蔽后只留「以管理员身份运行」「打开文件所在的位置」两项。 */
@@ -188,8 +237,8 @@
         background: var(--bg-raised);
         border: 1px solid var(--border-raised);
         border-radius: 6px;
-        /* 两层阴影：紧实的一层定型，扩散的一层拉开浮起感。 */
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5), 0 12px 28px rgba(0, 0, 0, 0.45);
+        /* 两层阴影：紧实的一层定型，扩散的一层拉开浮起感。（颜色随主题，见令牌） */
+        box-shadow: 0 2px 6px var(--shadow-1), 0 12px 28px var(--shadow-2);
         font-size: 12px;
         user-select: none;
       }

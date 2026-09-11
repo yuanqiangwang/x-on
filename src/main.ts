@@ -9,13 +9,15 @@ const matcher = new AppMatcher();
 // 系统功能图标：ms-settings / shell 命名空间在壳那里被当成"文件"，若走 SHGetFileInfoW
 // 提取会得到无辨识度的通用文档图标（还白费一次 IPC）。系统项辨识靠名字，这里给每项配
 // 一个贴切的彩色 emoji，忽略那个白文档图标。没配到的兜底统一齿轮 ⚙️。
+// ⚠️ key 必须与 src-tauri/src/system.rs 的 `uri` 逐字一致（包括 network-status /
+// storagesense 这类页后缀）：这里是精确匹配，对不上不会报错，只会静默降级成 ⚙️。
 const SYSTEM_EMOJI: Record<string, string> = {
   "ms-settings:personalization": "🎨",
   "ms-settings:display": "🖥️",
   "ms-settings:sound": "🔊",
-  "ms-settings:network": "🌐",
+  "ms-settings:network-status": "🌐",
   "ms-settings:bluetooth": "📡",
-  "ms-settings:storage": "💾",
+  "ms-settings:storagesense": "💾",
   "ms-settings:about": "ℹ️",
   "ms-settings:defaultapps": "🧩",
   "ms-settings:powersleep": "🔋",
@@ -44,7 +46,12 @@ type Settings = {
   autostart?: boolean;
   font?: string | null;
   resultRows?: number;
+  theme?: ThemePref;
 };
+
+type Theme = "light" | "dark";
+/// "auto" = 跟随 Windows 的应用模式（浅色/深色）；另两个值把主题钉死。
+type ThemePref = "auto" | Theme;
 
 // UI font chain: the user-supplied font name from settings.json is prepended
 // (VS Code editor.fontFamily style); empty falls back to the system-font default
@@ -61,6 +68,36 @@ function applyFont(font?: string | null) {
     // Empty => let the :root default (system font) apply.
     docStyle.removeProperty("--font");
   }
+}
+
+// ---------------------------------------------------------------------------
+// 主题：settings.json 的 `theme` = auto（默认，跟随 Windows）/ light / dark。
+//
+// 系统深浅色以 Tauri 的信号为准（Windows 上 tao 监听 AppsUseLightTheme 注册表，
+// 切换时推 tauri://theme-changed），而不是 CSS 的 prefers-color-scheme —— WebView2
+// 的颜色方案一旦被显式锁过，prefers-color-scheme 就不再随系统更新，那条通路会
+// 静默失效。matchMedia 只在拿不到 Tauri 主题时兜底取初值。
+//
+// CSS 侧只看 <html data-theme>，不用媒体查询：媒体查询与显式覆盖是两套优先级，
+// 混用会出现"用户选了浅色、系统是深色，两边打架"。单一属性、单一来源。
+// ---------------------------------------------------------------------------
+const prefersLight = window.matchMedia("(prefers-color-scheme: light)");
+let systemTheme: Theme = prefersLight.matches ? "light" : "dark";
+let themePref: ThemePref = "auto";
+
+/// 容错：拼错或大小写不符（"Light" / "system" / 空）一律回落到 auto，
+/// 而不是把窗口留在一个既不是浅色也不是深色的中间态。
+function parseThemePref(value?: string | null): ThemePref {
+  const v = value?.trim().toLowerCase();
+  return v === "light" || v === "dark" ? v : "auto";
+}
+
+function applyTheme() {
+  const theme: Theme = themePref === "auto" ? systemTheme : themePref;
+  document.documentElement.dataset.theme = theme;
+  // 窗口不透明（ADR 0001）：resize 时新露出的区域由窗口背景刷子先画一帧，不同步的话
+  // 浅色主题下每次高度自适应都会闪一条黑边。颜色须与 style.css 的 --bg 一致。
+  invoke("set_window_background", { theme }).catch(() => {});
 }
 
 const win = getCurrentWebviewWindow();
@@ -506,9 +543,21 @@ win.listen("wake", () => {
 // The index was already rebuilt in the backend; just re-read the fresh snapshot.
 win.listen("index-updated", () => loadApps(false));
 
+// 系统深浅色变化（Tauri 负责推；Windows 上源自 AppsUseLightTheme 注册表监听）。
+// 只有 auto 模式需要跟：显式选了 light/dark 时系统怎么变都与本窗口无关。
+void win.onThemeChanged(({ payload }) => {
+  systemTheme = payload;
+  if (themePref === "auto") applyTheme();
+});
+
 // Hot-apply a font change the user made in settings.json (backend watches it).
 win.listen<Settings>("settings-changed", (e) => {
   applyFont(e.payload.font);
+  const pref = parseThemePref(e.payload.theme);
+  if (pref !== themePref) {
+    themePref = pref;
+    applyTheme();
+  }
   if (typeof e.payload.resultRows === "number" && e.payload.resultRows > 0) {
     maxRows = Math.floor(e.payload.resultRows);
     render(); // 行数变化，重新 fit 窗口
@@ -534,15 +583,20 @@ function prewarmEmojiFont() {
 
 (async () => {
   prewarmEmojiFont();
+  // 系统主题先就位：Tauri 的初值比 matchMedia 可靠（理由见 applyTheme 上方）。
+  systemTheme = (await win.theme().catch(() => null)) ?? systemTheme;
   try {
     const settings = await invoke<Settings>("get_config");
     applyFont(settings.font);
+    themePref = parseThemePref(settings.theme);
     if (typeof settings.resultRows === "number" && settings.resultRows > 0) {
       maxRows = Math.floor(settings.resultRows);
     }
   } catch (e) {
     console.error(e);
   }
+  // 首次应用必须等配置读完：否则会先按默认深色画一帧、再跳成浅色。
+  applyTheme();
   await loadApps(true);
   input.focus();
 })();
