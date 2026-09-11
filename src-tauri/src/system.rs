@@ -3,8 +3,10 @@
 //! 第一性原理：系统设置项 = 一个名字 + 一个可启动它的 URI，与开始菜单 `.lnk` / 便携
 //! exe 本质相同，只是来源是「OS 固定资产」而非用户安装/手动加入。因此它不建子系统，
 //! 只是往 `build_index` 里 append 的一个常量数组；启动走现有 `open_path`（底层
-//! ShellExecuteW，已验证可打开 `ms-settings:`，见记忆 system-features-entry），图标走
-//! 现有首字母头像兜底。
+//! ShellExecuteW，已验证可打开 `ms-settings:`，见记忆 system-features-entry）。图标不由
+//! 后端提供：前端 `main.ts` 的 `SYSTEM_EMOJI` 按上面的 `uri` 精确匹配成彩色 emoji（配不到
+//! 的兜底 ⚙️），因为 SHGetFileInfoW 对这类 URI / CLSID 只给一个无辨识度的通用文档图标。
+//! 改这里的 `uri` 必须同步改 `SYSTEM_EMOJI` 的 key —— 对不上不会报错，只会静默掉到 ⚙️。
 //!
 //! 只收录 Win10/Win11 都稳定存在的高频设置页，避免版本差异导致一批失效项。
 
