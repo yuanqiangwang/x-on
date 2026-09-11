@@ -47,6 +47,8 @@ type Settings = {
   font?: string | null;
   resultRows?: number;
   theme?: ThemePref;
+  /// 自定义配色：基础色名 → 任意 CSS 颜色。见下方 THEME_COLOR_KEYS。
+  colors?: Record<string, string>;
 };
 
 type Theme = "light" | "dark";
@@ -84,6 +86,11 @@ function applyFont(font?: string | null) {
 const prefersLight = window.matchMedia("(prefers-color-scheme: light)");
 let systemTheme: Theme = prefersLight.matches ? "light" : "dark";
 let themePref: ThemePref = "auto";
+/// 用户自定义配色（settings.json 的 colors）。空对象 = 全用主题默认值。
+let themeConfig: Record<string, string> = {};
+/// 上一次生效的 colors 序列化结果。初值刻意不等于任何序列化结果，
+/// 保证 boot 时第一次调用 applyThemeInputs 一定会真的应用一次。
+let themeKey = "";
 
 /// 容错：拼错或大小写不符（"Light" / "system" / 空）一律回落到 auto，
 /// 而不是把窗口留在一个既不是浅色也不是深色的中间态。
@@ -92,12 +99,79 @@ function parseThemePref(value?: string | null): ThemePref {
   return v === "light" || v === "dark" ? v : "auto";
 }
 
+// ---------------------------------------------------------------------------
+// 自定义配色：colors 只能覆盖这几个"基础色"。选中行底、描边、悬停底、渐隐线这些
+// 派生色由 CSS 的相对颜色语法从基础色算出来（见 style.css 的 :root）—— 所以用户改
+// 一个 accent 就整族跟着走，不需要也不应该让他逐个填 rgba 变体。
+// 未知的键只警告、不生效：静默忽略的话，用户拼错一次会以为"配置根本没起作用"。
+// ---------------------------------------------------------------------------
+const THEME_COLOR_KEYS = [
+  "bg",
+  "bg-raised",
+  "text",
+  "text-head",
+  "muted",
+  "accent",
+] as const;
+
+function applyColors(colors: Record<string, string>) {
+  const docStyle = document.documentElement.style;
+  // 先清空：settings 里删掉的项必须真的回到主题默认值。
+  for (const key of THEME_COLOR_KEYS) docStyle.removeProperty(`--${key}`);
+  const unknown: string[] = [];
+  for (const [key, value] of Object.entries(colors)) {
+    if (!(THEME_COLOR_KEYS as readonly string[]).includes(key)) {
+      unknown.push(key);
+      continue;
+    }
+    const v = (value ?? "").trim();
+    if (v) docStyle.setProperty(`--${key}`, v);
+  }
+  if (unknown.length) {
+    console.warn(
+      `[xon] settings.json 的 colors 里有未知项：${unknown.join(", ")}` +
+        `（可用：${THEME_COLOR_KEYS.join(" / ")}）`,
+    );
+  }
+}
+
+/// 把当前生效的 --bg 交给原生窗口背景刷子。
+/// 用探针元素让浏览器把任意 CSS 颜色写法（#hex / rgb() / 命名色）解析成 `rgb(r, g, b)`，
+/// 再转成 Rust 侧 `Color::from_str` 认的 #rrggbb —— 自定义配色就不必限制写法。
+function resolveBgColor(): string {
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:fixed;visibility:hidden;color:var(--bg)";
+  document.body.appendChild(probe);
+  const computed = getComputedStyle(probe).color;
+  probe.remove();
+  const m = computed.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+  if (!m) return "";
+  const hex = [m[1], m[2], m[3]]
+    .map((n) => Number(n).toString(16).padStart(2, "0"))
+    .join("");
+  return `#${hex}`;
+}
+
 function applyTheme() {
   const theme: Theme = themePref === "auto" ? systemTheme : themePref;
   document.documentElement.dataset.theme = theme;
+  // 顺序要紧：先让主题决定基础值，再用用户行内覆盖压上去，最后才读 --bg。
+  applyColors(themeConfig);
   // 窗口不透明（ADR 0001）：resize 时新露出的区域由窗口背景刷子先画一帧，不同步的话
-  // 浅色主题下每次高度自适应都会闪一条黑边。颜色须与 style.css 的 --bg 一致。
-  invoke("set_window_background", { theme }).catch(() => {});
+  // 每次高度自适应都会闪一条底色不对的边。--bg 可能被用户改过，所以传算完的颜色本身。
+  const bg = resolveBgColor();
+  if (bg) invoke("set_window_background", { color: bg }).catch(() => {});
+}
+
+/// 配置 → 主题的唯一入口。只有 theme / colors 真的变了才重算：set_window_background
+/// 会让 tao 重绘整个窗口，改字体、改行数时不该白跑一趟。
+function applyThemeInputs(pref: ThemePref, colors?: Record<string, string>) {
+  const key = JSON.stringify(colors ?? {});
+  if (pref === themePref && key === themeKey) return;
+  themePref = pref;
+  themeConfig = colors ?? {};
+  themeKey = key;
+  applyTheme();
 }
 
 const win = getCurrentWebviewWindow();
@@ -127,11 +201,21 @@ let selected = 0;
 let browsing = false;
 
 // 窗口自适配常量：单条候选行高（与 index.html 的 --row-h 同步）、空查询窗口高、
-// 结果列表上边距。CHROME/GAP 为估算，实际高度按 dev 视口校准。
+// 结果列表上边距。
 // ⚠️ CHROME 承载了 index.html 里全部竖向间距（app padding、搜索行 padding-bottom、
 // footer 的 margin/padding）：改那些值必须同步改这里。
+//
+// CHROME = 94 而不是早期的 91。91 是拿"默认字体"凑出来的，而搜索行与提示条的高度
+// 实际由字体的 line-height: normal 决定 —— font 是用户可配的，换个行高高的中文字体
+// （霞鹜文楷的 normal 行高比雅黑高一截）内容就会比窗口高出好几像素，最后一行卡片的
+// 高亮底边被裁掉。现在 CSS 里把 #search / #footer 的 line-height 钉成了像素值，
+// 这个常量才真正与字体无关：
+//   12 + 32(搜索行) + 8(搜索行下内边距) + 1(其下边框)
+//      + 8 + 38(行) + 8(提示条上外边距) + 8(其上内边距) + 1(其上边框) + 16(提示条行高)
+//      + 8                                                = 140
+//   140 − GAP(8) − ROW_H(38)                              = 94
 const ROW_H = 38;
-const CHROME = 91;
+const CHROME = 94;
 const GAP = 8;
 let maxRows = 6; // 候选最大行数，来自 settings.json 的 resultRows，热更新
 
@@ -553,11 +637,7 @@ void win.onThemeChanged(({ payload }) => {
 // Hot-apply a font change the user made in settings.json (backend watches it).
 win.listen<Settings>("settings-changed", (e) => {
   applyFont(e.payload.font);
-  const pref = parseThemePref(e.payload.theme);
-  if (pref !== themePref) {
-    themePref = pref;
-    applyTheme();
-  }
+  applyThemeInputs(parseThemePref(e.payload.theme), e.payload.colors);
   if (typeof e.payload.resultRows === "number" && e.payload.resultRows > 0) {
     maxRows = Math.floor(e.payload.resultRows);
     render(); // 行数变化，重新 fit 窗口
@@ -585,18 +665,18 @@ function prewarmEmojiFont() {
   prewarmEmojiFont();
   // 系统主题先就位：Tauri 的初值比 matchMedia 可靠（理由见 applyTheme 上方）。
   systemTheme = (await win.theme().catch(() => null)) ?? systemTheme;
+  let settings: Settings | null = null;
   try {
-    const settings = await invoke<Settings>("get_config");
+    settings = await invoke<Settings>("get_config");
     applyFont(settings.font);
-    themePref = parseThemePref(settings.theme);
     if (typeof settings.resultRows === "number" && settings.resultRows > 0) {
       maxRows = Math.floor(settings.resultRows);
     }
   } catch (e) {
     console.error(e);
   }
-  // 首次应用必须等配置读完：否则会先按默认深色画一帧、再跳成浅色。
-  applyTheme();
+  // 首次应用等配置读完（或读取失败）之后：否则会先按默认深色画一帧、再跳成浅色。
+  applyThemeInputs(parseThemePref(settings?.theme), settings?.colors);
   await loadApps(true);
   input.focus();
 })();

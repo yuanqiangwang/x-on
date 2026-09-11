@@ -63,7 +63,7 @@ Raycast、PowerToys Run、Flow Launcher 等产品以英文环境为第一目标�
 - **零抖动自适应窗口** —— 按结果行数逐像素调整高度，无边框、无重排闪烁。
 - **批量图标提取与降级** —— 通过 IPC 批量并行提取应用图标并自动重试；系统项降级为主题化 emoji，避免单调的白色文档图标。
 - **原生 Windows 集成** —— 右键「以管理员身份运行」「打开文件所在的位置」，失焦自动隐藏，单实例唤出。
-- **主题跟随系统** —— 默认跟随 Windows 的浅色/深色设置实时切换（终端绿 / 纸白两套），也可在配置里固定一端。
+- **主题与配色可配** —— 默认跟随 Windows 的浅色/深色实时切换（终端绿 / 纸白两套）；可固定一端，也可覆盖 6 个基础色自定义整套配色，派生色自动跟随。
 - **精简技术栈** —— Tauri v2 后端 + 手写 DOM/TypeScript 前端，无框架、无 UI 库、无 CSS 框架。
 
 ## 性能
@@ -152,7 +152,7 @@ pnpm tauri build
 
 ## 配置
 
-配置文件位于 `%APPDATA%\com.xon.launcher\settings.json`，支持随时修改 `font`、`resultRows` 与 `theme` 而无需重启：
+配置文件位于 `%APPDATA%\com.xon.launcher\settings.json`，支持随时修改 `font`、`resultRows`、`theme` 与 `colors` 而无需重启：
 
 ```jsonc
 {
@@ -160,9 +160,16 @@ pnpm tauri build
   "autostart": true,           // 开机自启
   "font": "JetBrains Mono NF", // 界面字体
   "resultRows": 6,             // 最大结果行数
-  "theme": "auto"              // 主题：auto = 跟随 Windows 浅色/深色，或固定 light / dark
+  "theme": "auto",             // 主题：auto = 跟随 Windows 浅色/深色，或固定 light / dark
+  "colors": {                  // 自定义配色：只填想改的基础色
+    "accent": "#ff7a45"        // 选中行底、描边、渐隐线等派生色会自动跟着算
+  }
 }
 ```
+
+`colors` 可覆盖 **6 个基础色**：`bg`、`bg-raised`、`text`、`text-head`、`muted`、`accent`。其余颜色全部由它们派生 —— 所以换强调色只需要填一项，不会出现"强调色换了、派生色还是绿的"这种半截配色。取值是任意 CSS 颜色（`#hex`、`rgb()`、命名色都可以），自定义项对浅色/深色两套主题同时生效。
+
+> 配色请自行保证对比度：输入行与选中行是仅有的两处满强度强调色，用浅色强调色配浅色底会让它们直接读不出来。
 
 便携应用清单独立存放于同目录下的 `apps.json`，可通过托盘菜单「添加便携应用」维护。
 

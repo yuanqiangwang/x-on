@@ -4,26 +4,44 @@
          旧值 #58655c 只有 3.3:1，注释、序号、footer 全都不达标。
          满强度强调色只留给两个焦点：输入行与选中行，其余一律降饱和。
 
-         这里是 **深色（默认）** 主题。浅色主题在下方 `html[data-theme="light"]` 里
-         整组覆盖同名令牌 —— 主题只换颜色值，布局/结构/语义一律不动。由 main.ts 在
-         `<html>` 上写 `data-theme`（并同步原生窗口背景色，见 ADR 0001 配套实践 1）。
-         改这里的 --bg 记得同步 src-tauri 的 set_window_background。
+         这里是 **深色（默认）** 主题，浅色在下方 `html[data-theme="light"]` 覆盖同名基础色。
+         主题只换颜色值，布局/结构/语义一律不动。main.ts 在 `<html>` 上写 `data-theme`
+         选主题、写行内自定义属性做用户自定义配色，并把算完之后的 --bg 同步给原生窗口
+         背景刷子（见 ADR 0001 配套实践 1）。
          ------------------------------------------------------------------- */
       :root {
         color-scheme: dark; /* 原生控件/滚动条/选区跟随主题，别让它们掉回白色 */
+
+        /* ---- 基础色 = 用户口中的"配色方案" ----------------------------------
+           settings.json 的 colors 只能覆盖这 6 项，其余颜色全部由它们派生（见下）。
+           用户在 <html> 上写的是行内自定义属性，行内优先级高于任何选择器 ——
+           所以自定义配色对浅色/深色两套主题都生效，且不必改 CSS。 */
         --bg: #05060a;
         --bg-raised: #0a0d12; /* 浮起层（右键菜单） */
         --text: #a7bdae; /* 正文：10:1 */
         --text-head: #e6f2ea; /* 结果名：15:1 */
         --muted: #6d8075; /* 元信息：4.8:1 */
         --accent: #3dff9e;
-        --accent-dim: rgba(61, 255, 158, 0.35);
-        --accent-faint: rgba(61, 255, 158, 0.1);
-        --accent-row: rgba(61, 255, 158, 0.14); /* 选中行底：比 hover 实一档 */
-        --hover: rgba(167, 189, 174, 0.06); /* 悬停：中性，弱于选中 */
-        --border: rgba(167, 189, 174, 0.14); /* 分隔线 / 头像描边 */
-        --border-raised: rgba(61, 255, 158, 0.18); /* 浮层描边 */
-        --glow: 0 0 6px var(--accent-dim); /* 选中名的霓虹辉光，浅色主题下关掉 */
+
+        /* ---- 派生色：只由上面的基础色算出，不单独配置 ------------------------
+           相对颜色语法 rgb(from <色> r g b / <alpha>)：取同一组 RGB、只换 alpha。
+           这样用户改一个 --accent，选中行底 / 描边 / 渐隐线就整族跟着走 ——
+           否则会出现"强调色换了、派生色还是绿的"这种半截配色。
+
+           --accent-zero 不能用 transparent 顶替：transparent 是 rgba(0,0,0,0)，
+           与有色值插值时中途会往黑偏，渐隐带会脏一段。
+           （相对颜色语法 Chrome 119+；bundle 里 minimumWebview2Version 钉的是 120。） */
+        --accent-dim: rgb(from var(--accent) r g b / 0.35);
+        --accent-faint: rgb(from var(--accent) r g b / 0.1);
+        --accent-row: rgb(from var(--accent) r g b / 0.14); /* 选中行底：比 hover 实一档 */
+        --accent-zero: rgb(from var(--accent) r g b / 0);
+        --border-raised: rgb(from var(--accent) r g b / 0.18); /* 浮层描边 */
+        --hover: rgb(from var(--text) r g b / 0.06); /* 悬停：中性，弱于选中 */
+        --border: rgb(from var(--text) r g b / 0.14); /* 分隔线 / 头像描边 */
+
+        /* 选中名的辉光。选中态现在主要由"整行描边 + 实底"表达，辉光只是补充，
+           所以比早期版本弱一档 —— 再加亮会和刚点亮的描边互相打架。 */
+        --glow: 0 0 3px var(--accent-dim);
         --shadow-1: rgba(0, 0, 0, 0.5); /* 浮层阴影：紧实 / 扩散两层 */
         --shadow-2: rgba(0, 0, 0, 0.45);
         /* 默认系统字体；用户可在 settings.json 的 font 字段填任意已装字体名覆盖。 */
@@ -31,13 +49,36 @@
         /* 单条候选行高（px），与 main.ts 的 ROW_H 同步，用于窗口高度自适应。
            竖向间距同样由 main.ts 的 CHROME 承载：改下面的 padding/margin 要同步改它。 */
         --row-h: 38px;
+
+        /* ---- 形状 / 间距 / 动效 --------------------------------------------
+           提成令牌是为了让"整体观感调整"只动一个地方：圆角从 4px 走到 8~10px 这类
+           变化，不该散在七八条规则里各改一次。
+
+           ⚠️ --space-* 参与窗口高度计算 —— main.ts 的 CHROME / ROW_H / GAP 是按
+           这些数值手写死的。改数值必须回头同步 CHROME（见 CODEBUDDY.md 的 Gotchas）。
+
+           动效只允许作用在不参与布局的属性上（颜色 / 背景 / 描边）。任何改变高度的
+           过渡都会和 setSize 的异步 IPC 抢帧，那是 roadmap 1.1 要解决的问题，
+           不是靠加动画能绕开的。 */
+        --radius-sm: 4px;
+        --radius-md: 8px;
+        --radius-lg: 10px;
+        --space-xs: 4px;
+        --space-sm: 8px;
+        --space-md: 12px;
+        --space-lg: 16px;
+        --dur: 120ms;
+        --ease: cubic-bezier(0.2, 0, 0, 1);
       }
 
       /* -------------------------------------------------------------------
-         浅色主题：终端绿换成"纸白底 + 深绿"。取舍有三条——
+         浅色主题：终端绿换成"纸白底 + 深绿"。只覆盖 6 个基础色 ——
+         派生色（--accent-dim / --hover / --border…）会跟着这里的 --accent / --text
+         重算，不必也不能重复声明（声明了就会顶掉派生关系，用户改 accent 时又不生效）。
 
+         取舍有三条——
          1. 强调色必须换深绿。满强度 #3dff9e 在纸白上只有 1.2:1，输入行会直接
-            "消失"；#056a3b 对纸白 6.2:1、落在选中行底（浅绿）上仍有 5.4:1，
+            "消失"；#056a3b 对纸白 6.2:1、落在选中行底（浅绿）上仍有 5.0:1，
             才守得住"输入行 / 选中行是唯一焦点"这条约束。
          2. 底色用带极淡绿调的 #f2f5f1 而不是纯白：纯白配绿字会"发飘"，也丢了
             深色主题那点"屏幕感"；浮起层才用纯白，靠投影脱离底色。
@@ -51,12 +92,6 @@
         --text-head: #14201a; /* 结果名：15:1 */
         --muted: #5b6b60; /* 元信息：5.2:1 */
         --accent: #056a3b;
-        --accent-dim: rgba(5, 106, 59, 0.32);
-        --accent-faint: rgba(5, 106, 59, 0.09);
-        --accent-row: rgba(5, 106, 59, 0.1);
-        --hover: rgba(58, 75, 64, 0.06);
-        --border: rgba(58, 75, 64, 0.16);
-        --border-raised: rgba(5, 106, 59, 0.22);
         --glow: none;
         --shadow-1: rgba(20, 32, 26, 0.16);
         --shadow-2: rgba(20, 32, 26, 0.14);
@@ -78,28 +113,47 @@
         height: 100%;
         display: flex;
         flex-direction: column;
-        padding: 12px 16px 8px;
+        padding: var(--space-md) var(--space-lg) var(--space-sm);
       }
 
-      /* Terminal prompt row: a green › with the raw search field underneath. */
+      /* 搜索行：一个前导图标 + 输入框。 */
       #searchrow {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding-bottom: 8px;
-        /* 分隔线降到 accent-dim：满强度绿只留给"选中行"这一个焦点。 */
-        border-bottom: 1px solid var(--accent-dim);
+        gap: var(--space-sm);
+        padding-bottom: var(--space-sm);
+        /* 分隔线改成"左实右渐隐"：等宽实线会和输入行抢焦点，也在视觉上把搜索行
+           框成一条独立横条。1px 的盒子必须保留（CHROME 依赖它），所以只换画法 ——
+           background-origin: border-box + 100%×1px 的渐变条，正好落在原边框的位置。 */
+        border-bottom: 1px solid transparent;
+        background-image: linear-gradient(90deg, var(--accent-dim), var(--accent-zero) 72%);
+        background-repeat: no-repeat;
+        background-origin: border-box;
+        background-size: 100% 1px;
+        background-position: bottom;
       }
       #searchrow .mark {
-        color: var(--accent);
-        font-size: 18px;
+        /* 图标退到次级色：强调色只留给"输入文字"和"选中行"两个焦点，
+           一个亮绿的前导符会把注意力从用户正在敲的字上拉走。 */
+        display: flex;
+        align-items: center;
+        color: var(--muted);
+        line-height: 1;
         user-select: none;
       }
       #search {
         flex: 1;
-        padding: 4px 0;
+        /* 高度钉死：整窗高度是按像素算死的（main.ts 的 CHROME），而 font 是用户可配的。
+           若让 line-height 走 normal，换个行高高的中文字体（现网就有人在用霞鹜文楷，
+           normal 行高比雅黑高一截）就会把搜索行撑高好几像素，窗口随之变矮，最后一行
+           卡片的高亮底边被 #results 的 overflow: hidden 裁掉。
+           32 = 上下各 4px padding + 24px 行高，与 CHROME 的算式一一对应。 */
+        height: 32px;
+        padding: var(--space-xs) 0;
         font: inherit;
         font-size: 18px;
+        /* 必须写在 font: inherit 之后 —— font 是简写，会把 line-height 一起重置掉。 */
+        line-height: 24px;
         color: var(--accent);
         caret-color: var(--accent);
         background: transparent;
@@ -110,23 +164,36 @@
 
       #results {
         list-style: none;
-        margin: 8px 0 0;
+        margin: var(--space-sm) 0 0;
         padding: 0;
         /* 不滚动：候选超过 resultRows 行时直接截断，引导用户换检索词而不是滚动找。 */
         overflow: hidden;
         flex: 1;
       }
+      /* 每一行是一张卡片，而不是"贴着左边缘的一条"。
+         关键手法：基础态就带 1px 全透明描边占位，选中时只换描边颜色、不新增边框 ——
+         在 box-sizing: border-box 下，卡片的边框盒高度就是它的可见高度。
+
+         可见卡片 = --row-h − 2px，剩下 2px 走 margin-bottom：**行距仍等于 --row-h**，
+         所以 main.ts 的 rows * ROW_H 算式不用动；而那 2px 是留给窗口裁切的余量 ——
+         窗口高度是整数、真实内容高度含分数值，差零点几像素时被 overflow 吃掉的应该是
+         这条余量，而不是卡片的底边。左右各 2px 同理，让圆角露在底色上。 */
       #results li {
         display: flex;
         align-items: center;
-        gap: 8px;
-        height: var(--row-h);
+        gap: var(--space-sm);
+        height: calc(var(--row-h) - 2px);
         overflow: hidden;
-        /* 行高由 --row-h 定死，竖向 padding 不参与高度计算。 */
-        padding: 0 8px;
-        border-left: 2px solid transparent;
-        border-radius: 0 4px 4px 0;
+        /* 水平 padding 由行高以外的空间承载，竖向 padding 不参与高度计算。 */
+        padding: 0 var(--space-sm);
+        margin: 0 2px 2px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-md);
         color: var(--text);
+        /* 只过渡颜色类属性：它们不进布局，不会和窗口自适应的异步 setSize 抢帧。 */
+        transition:
+          background-color var(--dur) var(--ease),
+          border-color var(--dur) var(--ease);
       }
       /* 悬停必须比选中弱一档，否则"选中了哪一行"看不出来（去色后更明显）。
          写在 .active 之前，悬停才不会反过来盖掉选中态。 */
@@ -141,9 +208,12 @@
         user-select: none;
       }
       #results li.active .idx { color: var(--accent); }
+      /* 选中态：实底 + 描边（替代原来的 2px 左侧竖条）。底与描边都用 0.3 上下的
+         弱强度，文字才敢用满强度的 --accent —— 底一旦做实，绿字对底色的对比度
+         就会被吃掉，所以这里刻意不加深，见文件头部的对比度约定。 */
       #results li.active {
         background: var(--accent-row);
-        border-left-color: var(--accent);
+        border-color: var(--accent-dim);
       }
       /* 尺寸/圆角两类头像共用；描边不在这里，它只属于"首字母兜底"（见下）。
          真实图标（从 .exe 提取，自带不透明底或圆角）和彩色 emoji 都不描边：给它们
@@ -152,7 +222,7 @@
       #results li .avatar {
         width: 24px;
         height: 24px;
-        border-radius: 4px;
+        border-radius: var(--radius-sm);
         flex: 0 0 24px;
         object-fit: contain;
         background: transparent;
@@ -208,11 +278,16 @@
         display: flex;
         justify-content: center;
         gap: 12px;
-        margin-top: 8px;
-        padding-top: 8px;
-        border-top: 1px solid var(--border);
+        margin-top: var(--space-sm);
+        padding-top: var(--space-sm);
+        /* 上边框留 1px 透明占位：这里的分隔线是多余的（上下各 8px 间距已经分够组），
+           但删掉盒子会改变窗口高度常量 CHROME，所以只让颜色透明。
+           空态与列表态一致 —— 空态本来就没有列表要分隔。 */
+        border-top: 1px solid transparent;
         color: var(--muted);
         font-size: 11px;
+        /* 同样钉死行高：理由见 #search。这里是 16 = 11px 字号的固定行盒。 */
+        line-height: 16px;
         user-select: none;
         white-space: nowrap;
       }
@@ -222,10 +297,6 @@
       /* 空态收起时没有可选的列表，与列表有关的键位提示（↑↓ / ↵ / Ctrl+↵ / Alt+序号）
          都不成立，整组隐藏；列表可见时再换回来。 */
       #footer.empty .hint-list { display: none; }
-      /* 空态下没有列表需要与快捷键条分隔，这条上边框只会和搜索行下划线凑成"两条线夹着
-         一段空白"的空列表错觉 —— 关掉它，让搜索行下划线成为空态唯一的分割线。
-         用 transparent 而非 none：保留 1px 占位，窗口高度常量 CHROME 不必跟着改。 */
-      #footer.empty { border-top-color: transparent; }
 
       /* 自绘右键菜单：webview 自带菜单（重载/检查元素…）在启动器里全是噪音，
          屏蔽后只留「以管理员身份运行」「打开文件所在的位置」两项。 */
@@ -233,10 +304,10 @@
         position: fixed;
         z-index: 10;
         min-width: 176px;
-        padding: 4px;
+        padding: var(--space-xs);
         background: var(--bg-raised);
         border: 1px solid var(--border-raised);
-        border-radius: 6px;
+        border-radius: var(--radius-lg);
         /* 两层阴影：紧实的一层定型，扩散的一层拉开浮起感。（颜色随主题，见令牌） */
         box-shadow: 0 2px 6px var(--shadow-1), 0 12px 28px var(--shadow-2);
         font-size: 12px;
@@ -245,10 +316,13 @@
       #ctxmenu[hidden] { display: none; }
       #ctxmenu .item {
         /* padding + line-height 定死 26px 行高（贴 Windows 菜单的手感）。 */
-        padding: 4px 12px;
+        padding: var(--space-xs) var(--space-md);
         line-height: 18px;
-        border-radius: 4px;
+        border-radius: var(--radius-md);
         color: var(--text);
         white-space: nowrap;
+        transition:
+          background-color var(--dur) var(--ease),
+          color var(--dur) var(--ease);
       }
       #ctxmenu .item:hover { background: var(--accent-faint); color: var(--accent); }

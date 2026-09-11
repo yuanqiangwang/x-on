@@ -154,6 +154,12 @@ struct Config {
     /// 配置搬运工，顺带把 `settings.json` 的改动热推给窗口。
     #[serde(default = "Config::default_theme")]
     theme: String,
+    /// 自定义配色：基础色名 → 任意 CSS 颜色，覆盖当前主题的同名值。
+    /// 派生色（选中行底、描边、悬停底…）由 CSS 从基础色算出来，不用也不该在这里给。
+    /// 这里只搬运、不校验——合法键名与取值都在前端（`main.ts::applyColors`），
+    /// 后端插一脚只会多一处需要同步的名单。
+    #[serde(default)]
+    colors: HashMap<String, String>,
 }
 
 impl Default for Config {
@@ -164,6 +170,7 @@ impl Default for Config {
             font: String::new(),
             result_rows: Config::default_result_rows(),
             theme: Config::default_theme(),
+            colors: HashMap::new(),
         }
     }
 }
@@ -249,7 +256,11 @@ fn write_default_settings_template(app: &AppHandle) -> Result<(), String> {
   // 列表最大候选行数：改后立即生效（窗口高度随之自适应）
   "resultRows": 6,
   // 主题：auto = 跟随 Windows 的浅色/深色；也可固定为 light 或 dark。改后立即生效
-  "theme": "auto"
+  "theme": "auto",
+  // 自定义配色：只填想改的基础色，留空/缺省 = 用当前主题的默认值。改后立即生效
+  // 可用键：bg / bg-raised / text / text-head / muted / accent
+  // 选中行底、描边、悬停底等派生色会自动跟着算出来，不必逐个给
+  "colors": {}
 }"#;
     persist_settings(app, template)
 }
@@ -1062,21 +1073,20 @@ fn get_config(app: AppHandle) -> Config {
     load_config(&app)
 }
 
-/// 主题切换时同步原生窗口背景色。
+/// 主题/配色变化时同步原生窗口背景色。
 ///
-/// 窗口是不透明的（ADR 0001），`resize` 时新露出的那条区域先由窗口背景刷子画，
-/// 若这里仍是近黑，浅色主题下每次高度自适应都会闪一条黑边。`backgroundColor`
-/// 在 `tauri.conf.json` 里只能写死一个值，所以运行时必须由前端同步。
+/// 窗口是不透明的（ADR 0001），`resize` 时新露出的区域先由窗口背景刷子画一帧；
+/// 颜色不对就会在每次高度自适应时闪一条底边。`backgroundColor` 在 `tauri.conf.json`
+/// 里只能写死一个值，而主题与自定义配色都是运行时可变的，只能由前端把**算完之后**
+/// 的 `--bg` 传过来——所以入参是颜色本身，不是主题名（主题名已经推导不出底色了）。
 ///
-/// ⚠️ 两个色值须与 `src/style.css` 的 `--bg` 保持一致。
+/// 入参 `#rgb` / `#rrggbb` / `#rrggbbaa`（`Color` 自带 `FromStr`）。解析失败就静默
+/// 忽略：宁可窗口底色保持上一个有效值，也不要把它涂成用户没指定的颜色。
 #[tauri::command]
-fn set_window_background(window: tauri::WebviewWindow, theme: String) {
-    let color = if theme == "light" {
-        tauri::window::Color(242, 245, 241, 255) // #f2f5f1
-    } else {
-        tauri::window::Color(5, 6, 10, 255) // #05060a
-    };
-    let _ = window.set_background_color(Some(color));
+fn set_window_background(window: tauri::WebviewWindow, color: String) {
+    if let Ok(color) = color.parse::<tauri::window::Color>() {
+        let _ = window.set_background_color(Some(color));
+    }
 }
 
 /// 全量使用记录快照（`launchPath -> { count, lastUsed }`）。只读不改：把计数换算成

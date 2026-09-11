@@ -9,18 +9,26 @@
   <body>
     <div id="app">
       <div id="searchrow">
-        <span class="mark">›</span>
+        <!-- 前导图标：内联 SVG（16px 线性放大镜），颜色随父级 currentColor。
+             原来是 ASCII 的 ›，终端味最重、且要 18px 字号才站得住，换掉。 -->
+        <span class="mark" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+            <circle cx="7" cy="7" r="4.4" />
+            <path d="M10.4 10.4 14 14" />
+          </svg>
+        </span>
         <input id="search" type="text" autocomplete="off" spellcheck="false" placeholder="搜索应用…" />
       </div>
       <ul id="results"></ul>
+      <!-- 键位提示：列表可见时 4 条，空态只留「↓ 常用 / Esc」。刻意不列 Alt+Space 唤出：
+           用户刚刚就是按它进来的，每次唤醒都提醒一遍纯属噪音。 -->
       <div id="footer" class="empty">
         <span id="hint-recent" hidden><b>↓</b> 常用</span>
         <span class="hint-list"><b>↑↓</b> 选择</span>
         <span class="hint-list"><b>↵</b> 启动</span>
-        <span class="hint-list"><b>Ctrl+↵</b> 管理员</span>
-        <span class="hint-list"><b>Alt+序号</b> 速启</span>
+        <span class="hint-list"><b>Ctrl+↵</b> 管理员 · <b>Alt+序号</b> 速启</span>
         <span id="hint-esc"><b>Esc</b> <span id="esc-label">隐藏</span></span>
-        <span><b>Alt+Space</b> 唤出</span>
       </div>
     </div>
     <div id="ctxmenu" hidden></div>
