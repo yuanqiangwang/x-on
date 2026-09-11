@@ -2,8 +2,8 @@
 
 Black-box measurement of the launcher — every number is taken from outside the
 app, with synthetic keystrokes and Win32 window polling. Nothing is
-instrumented inside xon, so the same procedure could be pointed at any other
-launcher (Raycast, uTools, PowerToys Run) and the comparison stays fair.
+instrumented inside xon, so the procedure is reproducible and comparable
+across runs.
 
 ```
   bench.ps1 ──▶ 1. hotkey      Alt+Space  ──▶ window visible     ──▶ results/latest.md
@@ -120,8 +120,8 @@ variable.
 As of 2026-09-10 (Windows 11, Core Ultra 7 255H, xon 0.6.0 release):
 
 - **Hotkey is not the bottleneck.** p50 8.6 ms / p95 14.9 ms — comfortably
-  ahead of the 12–17 ms an Electron-free Swift/AppKit launcher reports for the
-  same measurement. There is little left to win here.
+  below the ~100 ms threshold a user can perceive as instantaneous. There is
+  little left to win here.
 - **Keystroke→results is ~8× slower** (p50 66.8 ms) and is where the perceived
   latency lives. Roughly 40 ms of that is the fixed input debounce; the rest is
   filter + full list rebuild + icon IPC. **Optimizing the summon path cannot
@@ -131,8 +131,7 @@ As of 2026-09-10 (Windows 11, Core Ultra 7 255H, xon 0.6.0 release):
   `msedgewebview2.exe` processes. That is the unavoidable cost of a webview UI
   on Windows, and it is why "rewrite the frontend in a framework" would change
   nothing. The number that xon actually controls is the 19 MB.
-- **CPU while idle is ~0.3%**, in the same band as asyar's 0.66%. Fine, and not
-  worth chasing.
+- **CPU while idle is ~0.3%.** Fine, and not worth chasing.
 
 ## Files
 
