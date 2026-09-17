@@ -91,6 +91,16 @@ pnpm bench
   the integrity-level mismatch above.
 - **"run N: no growth"** — the probe character matched nothing, so the window
   never grew. Try another: `pwsh -File benchmarks/bench.ps1 -TypingChar p`.
+- **"run N: no growth" on *every* run, with the height never changing at all** —
+  the app under test never booted its frontend, so the keystroke is a no-op and
+  nothing else on this page is trustworthy either. Two checks, both cheap:
+  the window must resize to fit its content (a bare wake is the input box alone,
+  ~94 logical px; a window sitting at exactly the `tauri.conf.json` height means
+  no JS ever ran), and `msedgewebview2` processes must exist as children of the
+  xon process. Observed 2026-09-17: a launcher started by an automation/tooling
+  host came up with **zero** WebView2 processes — the process ran, the global
+  shortcut registered, the panel appeared, but the webview never initialised,
+  so ESC did nothing and typing reported 0/N. Start xon the way a user does.
 - **Every hotkey number suspiciously identical** — you are probably measuring
   a debug build, or the machine is loaded enough that the poll loop dominates.
 
@@ -130,21 +140,48 @@ variable.
 
 ## Interpreting the current baseline
 
-As of 2026-09-10 (Windows 11, Core Ultra 7 255H, xon 0.6.0 release):
+As of 2026-09-17 (Windows 11, Core Ultra 7 255H, xon 0.7.1 release), measured on
+the same machine in the same session immediately before and after the
+Tailwind v4 / shadcn-visual-layer migration:
 
-- **Hotkey is not the bottleneck.** p50 8.9 ms / p95 14.6 ms — comfortably
-  below the ~100 ms threshold a user can perceive as instantaneous. There is
-  little left to win here.
-- **Keystroke→results is ~7× slower** (p50 63.3 ms) and is where the perceived
+| Metric | before | after | Δ |
+| --- | --- | --- | --- |
+| Hotkey → visible (p50 / p95) | 4.3 / 11.1 ms | 4.3 / 8.2 ms | 0 / −2.9 |
+| Keystroke → results (p50 / p95) | 64.7 / 66.2 ms | 69.0 / 81.1 ms | +4.3 / +14.9 |
+| Memory, idle (private) | 277.4 MB | 251.3 MB | −26.1 |
+| Memory, idle (working set) | 437.7 MB | 518.4 MB | +80.7 |
+| CPU while idle | 0.62 % | 0.21 % | −0.41 |
+| Installer size | 1.47 MB | 1.47 MB | 0 |
+| Bundle on disk (JS+CSS+HTML, gzip) | 150,145 B | 151,523 B | +1,378 (+0.92 %) |
+
+- **Hotkey is not the bottleneck, and it did not move.** p50 4.3 ms is far below
+  the ~100 ms threshold a user perceives as instantaneous. Little left to win.
+- **Keystroke→results is ~16× slower** (p50 69.0 ms) and is where the perceived
   latency lives. Roughly 40 ms of that is the fixed input debounce; the rest is
   filter + full list rebuild + icon IPC. **Optimizing the summon path cannot
   improve this number.**
-- **Memory is overwhelmingly WebView2, not xon.** Of 276.7 MB private at idle,
-  the Rust process accounts for **20.6 MB**; the other **256 MB** is six
-  `msedgewebview2.exe` processes. That is the unavoidable cost of a webview UI
-  on Windows, and it is why "rewrite the frontend in a framework" would change
-  nothing. The number that xon actually controls is the 20.6 MB.
-- **CPU while idle is 0.10%.** Fine, and not worth chasing.
+- **The `after` typing distribution is bimodal — read its p95 with that in mind.**
+  Two independent 15-run samples each split roughly 50/50 between a ~64.5 ms
+  cluster and a ~80 ms one (≈16 ms apart, about one 60 Hz frame). The `before`
+  sample was unimodal (63.3–72.5 ms). Both `after` runs also needed 2–3 re-syncs
+  where the `before` run needed none. The likely cause is machine load, not the
+  migration: the `after` session had **419 processes** plus an agent working,
+  against 377 for `before`, and the prerequisites above ask for a quiet machine.
+  **The +4.3 ms p50 sits just above the ~1–3 ms resolution this harness can
+  claim, and the p95 delta is a distribution-shape artifact.** A re-run on an
+  idle machine is needed to call it either way. For scale, the migration's total
+  measured cost is 1,378 bytes of gzip — it is not a plausible source of 15 ms.
+- **Memory is overwhelmingly WebView2, not xon.** Of 251.3 MB private at idle,
+  the Rust process accounts for **14.5 MB**; the other ~237 MB is six
+  `msedgewebview2.exe` processes. That is the unavoidable cost of a webview UI on
+  Windows, and it is why "rewrite the frontend in a framework" would change
+  nothing. The number xon actually controls is the 14.5 MB. Note that private and
+  working set moved in *opposite* directions (277.4 → 251.3 private, 437.7 → 518.4
+  working set), so WebView2's allocation split is not stable enough for a 26 MB
+  private-bytes delta to mean anything on its own.
+- **CPU while idle is 0.21%.** Fine, and not worth chasing.
+- **Cold start is `n/a`** here, as in every baseline recorded so far — it needs
+  `-ColdStart`, which is opt-in because it kills the running instance.
 
 ## Files
 

@@ -1,4 +1,4 @@
-# xon benchmark — 2026-09-17 10:30
+# xon benchmark — 2026-09-17 12:42
 
 ## Environment
 
@@ -13,32 +13,32 @@
 | Metric | xon 0.7.1 |
 | --- | --- |
 | Hotkey -> window visible (p50) | 4.3 ms |
-| Hotkey -> window visible (p95) | 11.1 ms |
-| Keystroke -> results (p50) | 64.7 ms |
-| Keystroke -> results (p95) | 66.2 ms |
+| Hotkey -> window visible (p95) | 8.2 ms |
+| Keystroke -> results (p50) | 69.0 ms |
+| Keystroke -> results (p95) | 81.1 ms |
 | Cold start -> usable | n/a |
-| Memory, idle (private) | 277.4 MB |
-| Memory, idle (working set) | 437.7 MB |
-| CPU while idle | 0.62 % |
+| Memory, idle (private) | 251.3 MB |
+| Memory, idle (working set) | 518.4 MB |
+| CPU while idle | 0.21 % |
 | Installer size | 1.47 MB |
 
 ## Raw samples
 
-- hotkey (ms, sorted): 3.0, 3.0, 3.1, 3.1, 3.2, 3.2, 3.7, 3.7, 3.9, 4.0, 4.1, 4.1, 4.3, 4.5, 4.5, 4.6, 4.7, 4.8, 5.2, 5.8, 6.5, 6.8, 7.4, 11.1, 19.7
-  - min 3.0 / mean 5.3 / max 19.7
-- typing (ms, sorted): 55.4, 62.9, 63.7, 63.9, 64.2, 64.4, 64.5, 64.7, 64.7, 64.8, 64.9, 65.0, 65.7, 66.1, 66.2
-  - min 55.4 / mean 64.1 / max 66.2
+- hotkey (ms, sorted): 2.3, 2.7, 2.8, 2.9, 3.1, 3.1, 3.4, 3.4, 3.7, 3.7, 3.8, 4.0, 4.3, 4.4, 4.4, 4.5, 4.7, 4.7, 5.1, 5.4, 6.3, 7.3, 7.4, 8.2, 27.0
+  - min 2.3 / mean 5.3 / max 27.0
+- typing (ms, sorted): 63.8, 64.2, 64.7, 65.1, 65.6, 65.6, 65.9, 69.0, 79.1, 79.8, 79.8, 80.1, 80.9, 80.9, 81.1
+  - min 63.8 / mean 72.4 / max 81.1
 - process group: 7 process(es) — full tree, recursive
 
 ## Process breakdown at idle
 
-  - msedgewebview2 (pid 13060): private 96.7 MB, working set 87.6 MB
-  - msedgewebview2 (pid 27240): private 88.4 MB, working set 133.6 MB
-  - msedgewebview2 (pid 34136): private 52.5 MB, working set 90.3 MB
-  - xon (pid 21868): private 17.7 MB, working set 61.2 MB
-  - msedgewebview2 (pid 23868): private 11.6 MB, working set 36.6 MB
-  - msedgewebview2 (pid 22244): private 7.6 MB, working set 16.4 MB
-  - msedgewebview2 (pid 23092): private 2.8 MB, working set 12.0 MB
+  - msedgewebview2 (pid 41628): private 88.8 MB, working set 109.3 MB
+  - msedgewebview2 (pid 36608): private 78.3 MB, working set 178.0 MB
+  - msedgewebview2 (pid 36656): private 47.4 MB, working set 95.6 MB
+  - xon (pid 42264): private 14.5 MB, working set 62.7 MB
+  - msedgewebview2 (pid 31412): private 11.6 MB, working set 39.9 MB
+  - msedgewebview2 (pid 8156): private 7.7 MB, working set 18.5 MB
+  - msedgewebview2 (pid 3524): private 2.9 MB, working set 14.4 MB
 - installer measured: xon_0.7.1_x64-setup.exe (distribution artifact; excludes the
   WebView2 runtime, which Windows already provides)
 
