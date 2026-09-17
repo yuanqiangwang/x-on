@@ -29,8 +29,15 @@
          而注释里又**必须**提类名（不提就没法读代码），所以解法是收紧扫描范围，
          不是改注释 —— 改注释会反复回归。
 
-         ⚠️ 纪律：下面 @source 列出的两个文件就是全部来源。新增任何"带 Tailwind 类名的
-         文件"必须同步加进来，否则那些类不会被生成 —— **静默失效：构建不报错，只是样式没了**。
+         ⚠️ 纪律（两条，都是静默失败 —— 构建不报错，只是结果不对）：
+         1. 下面 @source 列出的两个文件就是全部来源。新增任何"带 Tailwind 类名的文件"
+            必须同步加进来，否则那些类不会被生成 —— 构建不报错，只是样式没了。
+         2. 被 @source 的文件，**它的注释也在扫描范围内**。所以 ui-classes.ts 的注释里
+            只允许出现它真正用到的类名；想举例"故意不用"的类名（反例）写在本文件里 ——
+            本文件不在 @source 里，注释提什么都没人扫。这一条已实测：本文件注释里的
+            text-[18px] / bg-background / h-9 / dark:bg-card 一个都没进产物。
+            踩过的坑：ui-classes.ts 曾用反例解释"为什么不用某个字重类"，结果那个类被真的
+            生成了，还连带一条 @property 注册 —— 注释把想否定的东西实现了，产物反而变大。
          ------------------------------------------------------------------- */
       @import "tailwindcss/utilities.css" layer(utilities) source(none);
       @source "../index.html"; /* 搜索行的原子类（Step 3a） */
@@ -38,8 +45,8 @@
 
       /* -------------------------------------------------------------------
          设计令牌。近黑底 + 终端绿；灰阶统一带绿调（hue≈150），不用纯灰（纯灰发死）。
-         文本三级：强 15:1 / 正文 10:1 / 次级 4.8:1 —— 11px 小字也要过 WCAG AA，
-         旧值 #58655c 只有 3.3:1，注释、序号、footer 全都不达标。
+         文本三级：强 15:1 / 正文 10:1 / 次级 4.8:1 —— 12px 小字也要过 WCAG AA
+         （正文门槛 4.5:1），旧值 #58655c 只有 3.3:1，注释、序号、footer 全都不达标。
          满强度强调色只留给两个焦点：输入行与选中行，其余一律降饱和。
 
          这里是 **深色（默认）** 主题，浅色在下方 `html[data-theme="light"]` 覆盖同名基础色。
@@ -150,6 +157,14 @@
          用 @theme inline 而不是 @theme：inline 让工具类直接输出 `var(--bg)`，而不是
          经过 Tailwind 在 :root 生成的 `--color-bg` 中转。少一层间接，也避免主题变量
          被固化 —— 否则 html[data-theme="light"] 与行内 colors 覆盖会断链。
+
+         ⚠️ 副作用（实测）：inline 的代价是这些令牌**不会**被输出成 :root 上的自定义属性
+         —— 构建产物里搜不到 --text-meta / --color-bg 这类名字。所以**普通 CSS 里不能写
+         var(--text-meta)**，只能用字面量（#footer 的 12px 就是这么来的；#ctxmenu 走
+         index.html 上的 text-meta 类，不需要字面量 —— 元素在 HTML 里就有这个选择）。
+         对比下面那个非 inline 的 @theme：--radius-sm/md/lg 会被输出到 :root，所以现有
+         规则里的 var(--radius-md) 照常解析。两种写法在这一点上行为相反，别混着记 ——
+         判断某个令牌能不能被 var() 引用，先看它在哪个 @theme 块里。
          ------------------------------------------------------------------- */
 
       /* 暗色变体：本应用用 <html data-theme> 选主题，不用 .dark 类，
@@ -181,15 +196,57 @@
            会让一个类同时定字号和行高，行高被"钉死"这件事就写在一处。
 
            ⚠️ 名字按**层级**命名而不是按位置：text-* 既是字号命名空间也是颜色
-           命名空间，叫 text-input 会和已有的 --color-input 撞车、解析结果不定。 */
-        --text-lead: 18px; /* 搜索输入：18 / 24 */
+           命名空间，叫 text-input 会和已有的 --color-input 撞车、解析结果不定。
+
+           ---- Step 4a：三档，全部落在 Tailwind 刻度上 ----------------------
+
+             18px  text-lead   搜索输入
+             14px  text-body   候选名
+             12px  text-meta   其余全部（副标题 / 序号 / footer / 右键菜单）
+
+           改之前小字是 11px，一共四档。11px 的三个问题都不是感觉问题：
+             1. 落在 Tailwind 刻度之外（它的 xs 就是 12px），是个"野生值"；
+             2. 和右键菜单的 12px 只差 1px —— 两档"小字"肉眼分不出来，是层级噪音；
+             3. 汉字笔画会糊。实测 YaHei 的汉字墨迹占 em 的 **97%**（12px 的「应」
+                墨迹高 11.68px），11px 下只剩 10.7px 去摊 9~10 笔，笔画必然并线。
+                拉丁数字不受影响（「1」只占 em 的 77%），所以问题出在 CJK 上。
+           合并后层级四档变三档，比例 18 : 14 : 12（1.29 / 1.17）。
+
+           ---- 行高为什么是 16px：34px 预算 + 一处巧合 ----------------------
+           候选行的内容盒只有 34px（row-h 38 − 2px margin − 2px 上下边框），
+           .name + .sub 两行之和必须塞进去。16px 是算出来的，不是拍的：
+
+             .name  14 × 1.25 = 17.5px
+             .sub   12 × 1.33 = 16.0px        合计 33.5px ≤ 34px ✓（余 0.5px）
+
+           而 16px 同时又是 #footer 需要的值 —— 它参与 main.ts 的 CHROME 算式，
+           必须钉成整数像素。两处需求撞在同一个数上，所以小字只留一个令牌。
+           代价是副标题的行高与 footer 绑定了：**改这个 16px 要回头改 CHROME**。
+
+           ⚠️ 行高刻意不用 Tailwind 的默认值（它的 xs 是 1rem、sm 是 1.25rem）：
+           按默认值两行合计 38.5px，比 34px 的盒子高出 4.5px，直接溢出。
+
+           ---- 字重：这套字体栈下 500 是空操作（读 msyh.ttc 实测） -----------
+           本机 YaHei 只发行三张字重：Regular(400) / Bold(700) / Light(290)。
+           **没有 Medium(500)** —— 所以 `font-medium` 会静默退回 400，写了等于没写，
+           而且不报错。顺带一提 Light 注册的是 290 而不是 300，`font-light` 也未必
+           命中，这条不依赖。
+
+           另一个实测结论：YaHei 自带完整拉丁字母（A-Z/a-z/0-9 全覆盖），所以整行
+           UI 包括 Esc / Ctrl / Alt 都由 YaHei 渲染，不存在"汉字一种字重、拉丁另一种"
+           的混排问题 —— 这也意味着 600 和 700 在这套栈里是同一个结果。
+
+           那为什么不用 700？技术上可行（msyhbd.ttc 就在那儿），这一版刻意不用：
+             1. 候选名已经靠 15:1 的对比度拿到全 UI 最高优先级，再叠字重是双重强调；
+             2. 深底亮字本身有膨胀感（irradiation），14px 的粗体汉字会显糊；
+             3. 8 行密排时全部加粗反而吵，会削弱"选中行"这个唯一的焦点。
+           结论：层级只用**字号 + 颜色**两轴表达，不引入字重这第三轴。 */
+        --text-lead: 18px; /* 搜索输入：18 / 24（h-8 + py-1 正好留出 24 内容盒） */
         --text-lead--line-height: 24px;
-        --text-body: 14px; /* 候选名：14 / 1.25 */
+        --text-body: 14px; /* 候选名：14 × 1.25 = 17.5px */
         --text-body--line-height: 1.25;
-        --text-meta: 11px; /* 副标题：11 / 1.2 */
-        --text-meta--line-height: 1.2;
-        --text-hint: 11px; /* 序号 / footer：11 / 16 */
-        --text-hint--line-height: 16px;
+        --text-meta: 12px; /* 其余全部：12 / 16（16 与 #footer 共用，见上） */
+        --text-meta--line-height: 16px;
 
         /* ---- 颜色：全部引用现有令牌，不复制任何值 ------------------------- */
         --color-bg: var(--bg);
@@ -349,13 +406,23 @@
       /* 悬停必须比选中弱一档，否则"选中了哪一行"看不出来（去色后更明显）。
          写在 .active 之前，悬停才不会反过来盖掉选中态。 */
       #results li:hover { background: var(--hover); }
-      /* 序号：与 Alt+数字 快速启动对应。等宽数字，位数变化不撑动后面的图标。
-         定宽 12px 是布局几何，留下；排版与颜色已搬到原子类（见 main.ts）：
-           text-hint(11/16) text-muted tabular-nums text-center select-none
-         用 text-hint 而不是 text-meta：序号与 footer 同为 11/16 这一档，
-         行高被钉死也比继承 normal 更可预期（行内是 align-items:center 的弹性项，
-         两者都不影响行高，但钉死的那个不随用户换字体而变）。 */
-      #results li .idx { flex: 0 0 12px; }
+      /* 序号：与 Alt+数字 快速启动对应。位数变化不撑动后面的图标。
+         定宽是布局几何，留下；排版与颜色已搬到原子类（见 ui-classes.ts）：
+           text-meta(12/16) text-muted tabular-nums text-center select-none
+
+         ---- 定宽 12 → 15px：11→12px 换档时带出来的回归 --------------------
+         YaHei 的数字 advance 实测 0.5867em（2048 em 下 1202 单位）；`tabular-nums`
+         在这张字上是空操作（GSUB 里没有 tnum），但数字本来就等宽，所以无所谓。
+         按这个宽度算：
+
+             12px 下  '1' = 7.04px    '10' = 14.07px    '100' = 21.11px
+
+         12px 的定宽从 11px 时代就在用（那时 '10' = 12.90px，已经差 0.9px 装不下），
+         字号提到 12px 后缺口涨到 2.07px。因为 text-center 是居中溢出，表现不是
+         被裁掉，而是**两位数那一行的数字左右各探出约 1px** —— 序号列的左边缘会在
+         第 9 行和第 10 行之间错开 3.5px，看上去像没对齐。
+         15px 装得下 '10'~'99'（resultRows 开到 99 都够），且单双位数共用同一中心轴。 */
+      #results li .idx { flex: 0 0 15px; }
       #results li.active .idx { color: var(--accent); }
       /* 选中态：实底 + 描边（替代原来的 2px 左侧竖条）。底与描边都用 0.3 上下的
          弱强度，文字才敢用满强度的 --accent —— 底一旦做实，绿字对底色的对比度
@@ -375,6 +442,22 @@
         flex: 0 0 24px;
         object-fit: contain;
         background: transparent;
+      }
+      /* ---- Step 3d：图标首次出现时淡入 ------------------------------------
+         冷启动时这一格先显示字母兜底（图标要经一次 IPC 从 Rust 侧提取），提取完成后
+         整表重建换成 <img> —— 不加淡入就是一次硬切。
+
+         ⚠️ 只动 opacity，不碰任何布局属性。改变尺寸的过渡会和 setSize 的异步 IPC 抢帧，
+         那是 roadmap 1.1 的问题，不是加个动画能绕开的（见 :root 的动效约定）。
+
+         ⚠️ icon-in 由 main.ts 的 iconRevealed 门控，**不是无条件挂在 img 上**：
+         render() 会整表重建，无条件挂的话每次敲键都会让所有可见图标重播一遍渐显。
+         `both` 让元素插入与动画启动之间不露出那一帧满不透明度的图标。 */
+      @keyframes icon-in {
+        from { opacity: 0; }
+      }
+      #results li img.icon-in {
+        animation: icon-in var(--dur) var(--ease) both;
       }
       /* 首字母兜底头像：只有一个字母，本身没有形状可言，靠描边把它定成一个"块"。
          这是唯一需要描边的一类头像。 */
@@ -398,12 +481,29 @@
         color: inherit;
         font-weight: 400;
       }
-      /* .meta / .name / .sub 的排版、颜色与单行截断已全部搬到原子类（见 main.ts）：
+      /* .meta / .name / .sub 的排版、颜色与单行截断已全部搬到原子类（见 ui-classes.ts）：
            .meta  flex flex-col min-w-0   ← display / flex-direction / min-width:0
            .name  text-body(14/1.25) text-fg-strong truncate
-           .sub   text-meta(11/1.2)  text-muted     truncate
+           .sub   text-meta(12/16)   text-muted     truncate
          （truncate = white-space:nowrap + overflow:hidden + text-overflow:ellipsis，
            与原来那三条逐字对应。）
+
+         ---- 两行叠起来的视觉间隙：3.08 → 4.04px（Step 4a） ----------------
+         行盒之间的间隙不等于看得见的间隙。YaHei 的汉字墨迹占 em 的 97%，而行盒
+         只比 em 大一点，所以按行盒算会低估紧凑程度。按浏览器的行盒模型逐层算
+         （hhea ascent 1.0581 / descent 0.2617 —— 本字体没置 USE_TYPO_METRICS，
+         所以走 hhea 而不是 OS/2 的 typo 值）：
+
+             改前  副标题 11px / 1.2   = 13.2px 行盒 → 两行合计 30.70px，墨迹间隙 3.08px
+             改后  副标题 12px / 16px  = 16.0px 行盒 → 两行合计 33.50px，墨迹间隙 4.04px
+
+         墨迹间隙 = 名称墨迹下沿到副标题墨迹上沿的距离，**涨了 31%**。
+         4.04px 约等于副标题墨迹高（11.68px）的 0.35，落进"标题 + 说明"两行叠放的
+         常规区间（0.3~0.5）；改前的 3.08px 是 0.26，偏紧。
+         34px 的盒子还剩 0.5px，这是刻意的：再松就会顶到边框盒。
+
+         改的是行高而不是加 margin —— 行高是文字栈里管行间距的正当工具；加 margin
+         会引入第三套间距机制（前面已有行高与 flex gap 两套），拆开更难核。
 
          ⚠️ .name / .idx 的 class 名必须保留：下面两条选中态规则靠它定位。
             .meta / .sub 保留是为了 DevTools 里还能认人，没有 CSS 依赖。 */
@@ -411,6 +511,16 @@
         color: var(--accent);
         text-shadow: var(--glow);
       }
+
+      /* ---- Step 3d：无命中提示 --------------------------------------------
+         它在 DOM 里是一条 <li>，好让几何（height / margin / padding / 圆角）直接复用
+         #results li —— 高度正好等于一条候选，所以 main.ts 的 rows 取 max(…, 1) 之后，
+         CHROME 算式一个字都不用改。
+
+         pointer-events: none 一次解决两件事：挡掉悬停的高亮底（一条状态说明不该有
+         悬停反馈），以及让 list 上的 mousemove 找不到 li、不去同步选中态。
+         排版与颜色走原子类（见 ui-classes.ts 的 NOTE），这里只管这一条。 */
+      #results li.empty-note { pointer-events: none; }
 
       /* 快捷键提示：键帽用强调色、说明压到次级；用 gap 拉开，不靠 &nbsp; 拼空格。 */
       #footer {
@@ -424,8 +534,21 @@
            空态与列表态一致 —— 空态本来就没有列表要分隔。 */
         border-top: 1px solid transparent;
         color: var(--muted);
-        font-size: 11px;
-        /* 同样钉死行高：理由见 #search。这里是 16 = 11px 字号的固定行盒。 */
+        /* Step 4a：小字档统一到 12px，与副标题、序号同一档（见 @theme 的排版刻度）。 */
+        font-size: 12px;
+        /* 同样钉死行高：理由见 #search。16px 同时参与 main.ts 的 CHROME 算式，
+           所以改字号不能连带动它。12px 配 16px 行盒，实测整行宽度：
+
+             列表态  ↑↓ 选择 / ↵ 启动 / Ctrl+↵ 管理员 · Alt+序号 速启 / Esc 隐藏
+                     文本 281.3px + gap 12×3 = 317.3px    内容宽 608 → 余 291px ✓
+             空态    ↓ 常用 / Esc 隐藏 = 91.3px
+
+           （内容宽 = 窗口 640 − #app 左右各 16px。原来注释里写的"约 400px"是估的，
+             偏大 26%，已按字体度量改正。）
+
+           ⚠️ 两处 ↵（U+21B5）YaHei 不含，会 fallback 到 Segoe UI Symbol（12px 下宽
+           6.62px）。试过的替代字形（⏎ ↲ ↩ ␍ ⤶）YaHei 一个都没有，所以这不是选型
+           问题，只能接受 fallback —— 它只是个符号，换字体不影响可读性。 */
         line-height: 16px;
         user-select: none;
         white-space: nowrap;
@@ -436,32 +559,37 @@
       /* 空态收起时没有可选的列表，与列表有关的键位提示（↑↓ / ↵ / Ctrl+↵ / Alt+序号）
          都不成立，整组隐藏；列表可见时再换回来。 */
       #footer.empty .hint-list { display: none; }
+      /* 查询无命中（Step 3d）：列表是展开了，但 ↑↓ / ↵ / Ctrl+↵ / Alt+序号 一条都不成立，
+         整组收起，只留 Esc（#hint-recent 由 main.ts 的 hintRecent.hidden 管）。
+         与 .empty 同一手法、相反条件：那个是"列表没展开"，这个是"展开了但空"。 */
+      #footer.no-hits .hint-list { display: none; }
 
       /* 自绘右键菜单：webview 自带菜单（重载/检查元素…）在启动器里全是噪音，
-         屏蔽后只留「以管理员身份运行」「打开文件所在的位置」两项。 */
+         屏蔽后只留「以管理员身份运行」「打开文件所在的位置」两项。
+
+         外观已搬到原子类（Step 3c）：菜单本体的几何/颜色/字号在 index.html 的 #ctxmenu 上
+         （fixed / z-10 / min-w-44 / p-1 / bg-raised / border / border-border-raised /
+         rounded-lg / text-meta / select-none），菜单项的类配方在 ui-classes.ts。
+         这里只剩三件搬不走的 —— */
       #ctxmenu {
-        position: fixed;
-        z-index: 10;
-        min-width: 176px;
-        padding: var(--space-xs);
-        background: var(--bg-raised);
-        border: 1px solid var(--border-raised);
-        border-radius: var(--radius-lg);
-        /* 两层阴影：紧实的一层定型，扩散的一层拉开浮起感。（颜色随主题，见令牌） */
+        /* 1. 两层阴影：紧实的一层定型，扩散的一层拉开浮起感（颜色随主题，见令牌）。
+              刻意不用 shadow-* 工具类：那个会把 --tw-inset-shadow / --tw-inset-ring-shadow /
+              --tw-ring-offset-shadow / --tw-ring-shadow 四个 @property 注册全拖进产物，
+              为一个元素付这份体积不划算 —— 与 #searchrow 的渐变分隔线同一个取舍。 */
         box-shadow: 0 2px 6px var(--shadow-1), 0 12px 28px var(--shadow-2);
-        font-size: 12px;
-        user-select: none;
       }
+      /* 2. 状态：hidden 属性由 main.ts 切换。
+             ⚠️ 不能删。UA 样式表里的 [hidden] { display: none } 只有 (0,1,0)，
+             任何原子类里的 display 都能盖掉它；这条 (1,1,0) 才是压得住的那道保险。 */
       #ctxmenu[hidden] { display: none; }
       #ctxmenu .item {
-        /* padding + line-height 定死 26px 行高（贴 Windows 菜单的手感）。 */
+        /* 3. 盒子怎么摆：padding + line-height 定死 26px 行高（贴 Windows 菜单的手感）。
+              line-height 不跟 text-meta 走 —— 那是 16px，会得到 24px 的项高；
+              它是这个组件的几何，和候选行的 --row-h 同类。 */
         padding: var(--space-xs) var(--space-md);
         line-height: 18px;
-        border-radius: var(--radius-md);
-        color: var(--text);
         white-space: nowrap;
-        transition:
-          background-color var(--dur) var(--ease),
-          color var(--dur) var(--ease);
       }
+      /* 悬停：底用 0.1 强度的强调色（弱），字用满强度 —— 与候选行同一套层级逻辑。
+         状态留 CSS，特异性 (1,1,0) 压得住原子类 (0,1,0)，不依赖 Tailwind 的输出排序。 */
       #ctxmenu .item:hover { background: var(--accent-faint); color: var(--accent); }

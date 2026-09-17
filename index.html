@@ -8,12 +8,9 @@
   </head>
   <body>
     <div id="app">
-      <!-- 搜索行的布局/排版在 class 上（Step 3a）。每条原子类对应原来哪条 CSS、以及
-           哪几个值不能动，见 src/style.css 的「搜索行」注释块 —— 注释放在 CSS 里
-           不占发布体积（会被压缩掉），放这里会随 HTML 一起发出去。 -->
+      <!-- 搜索行：布局/排版在 class 上（Step 3a），逐条对应见 src/style.css「搜索行」。 -->
       <div id="searchrow" class="flex items-center gap-2 pb-2">
-        <!-- 前导图标：内联 SVG（16px 线性放大镜），颜色随父级 currentColor。
-             原来是 ASCII 的 ›，终端味最重、且要 18px 字号才站得住，换掉。 -->
+        <!-- 前导图标：内联 16px 线性放大镜，颜色随 currentColor（原 ASCII › 已换掉）。 -->
         <span class="mark flex items-center text-muted leading-none select-none" aria-hidden="true">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
                stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
@@ -27,8 +24,7 @@
           type="text" autocomplete="off" spellcheck="false" placeholder="搜索应用…" />
       </div>
       <ul id="results"></ul>
-      <!-- 键位提示：列表可见时 4 条，空态只留「↓ 常用 / Esc」。刻意不列 Alt+Space 唤出：
-           用户刚刚就是按它进来的，每次唤醒都提醒一遍纯属噪音。 -->
+      <!-- 键位提示：空态只留「↓ 常用 / Esc」；刻意不列 Alt+Space —— 用户刚按它进来。 -->
       <div id="footer" class="empty">
         <span id="hint-recent" hidden><b>↓</b> 常用</span>
         <span class="hint-list"><b>↑↓</b> 选择</span>
@@ -37,7 +33,9 @@
         <span id="hint-esc"><b>Esc</b> <span id="esc-label">隐藏</span></span>
       </div>
     </div>
-    <div id="ctxmenu" hidden></div>
+    <!-- 自绘右键菜单：外观在 class 上（Step 3c），搬不走的见 src/style.css「自绘右键菜单」。 -->
+    <div id="ctxmenu" hidden
+         class="fixed z-10 min-w-44 p-1 bg-raised border border-border-raised rounded-lg text-meta select-none"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -5,7 +5,7 @@ import { AppMatcher, type AppInfo, type UsageMap } from "./matcher";
 // 候选行的 Tailwind 类配方。单独成文件是为了让 Tailwind 的扫描范围能收紧到
 // 「只有本文件 + index.html」—— 否则 style.css 的注释和本文件的代码字符串
 // 会被当成候选类，凭空生成约 20% 的无用 CSS。理由与纪律见 ui-classes.ts 头部。
-import { ROW, ROW_ACTIVE, ROW_IDX, ROW_META, ROW_NAME, ROW_SUB } from "./ui-classes";
+import { CTX_ITEM, NOTE, ROW, ROW_ACTIVE, ROW_IDX, ROW_META, ROW_NAME, ROW_SUB } from "./ui-classes";
 
 // 检索匹配深模块：index 重建拼音索引、search 排序返回。分层/同音抑制全藏其内部。
 const matcher = new AppMatcher();
@@ -231,6 +231,9 @@ let maxRows = 6; // 候选最大行数，来自 settings.json 的 resultRows，�
 const iconCache = new Map<string, string | null>();
 const iconFetching = new Set<string>();
 const iconTries = new Map<string, number>();
+// 已经淡入过的 launchPath（Step 3d）。render() 是整表重建，<img> 每次都会被新建 ——
+// 不给淡入加门控的话，每次敲键都会让所有可见图标重播一遍渐显（40ms 去抖挡不住这个）。
+const iconRevealed = new Set<string>();
 const MAX_ICONS_PER_BATCH = 50;
 const MAX_ICON_TRIES = 3;
 
@@ -346,7 +349,7 @@ function openContextMenu(a: AppInfo, x: number, y: number) {
   ctxMenu.textContent = "";
   for (const it of items) {
     const el = document.createElement("div");
-    el.className = "item";
+    el.className = CTX_ITEM;
     el.textContent = it.label;
     el.addEventListener("click", () => {
       closeContextMenu();
@@ -440,16 +443,32 @@ function render() {
   // showList 与上方 filtered 同源：能看见的才可导航，二者必须一致。
   const showList = query.length > 0 || browsing;
   list.style.display = showList ? "block" : "none";
-  // filtered 上方已截断到 maxRows，可见行数就是它自身。
-  const rows = showList ? filtered.length : 0;
+
+  // 列表展开了却一条候选都没有（查询无命中）。此时窗口会留一条空白，而 footer 那几条
+  // 键位提示（↑↓ / ↵ / Ctrl+↵ / Alt+序号）全是失效的 —— 放一行提示占住位置，并让
+  // footer 收起那组提示。提示行的高度就是一条候选（--row-h − 2px + 2px margin），
+  // 所以下面的 rows 取 max(…, 1) 之后，CHROME 算式一个字都不用动。
+  const noHits = showList && filtered.length === 0;
+  if (noHits) {
+    const note = document.createElement("li");
+    note.className = NOTE;
+    // browsing 时走到这里只可能是索引为空（frequent 是 ranked 切片，有条目就不会空）。
+    note.textContent = query ? "无匹配" : "暂无条目";
+    list.appendChild(note);
+  }
+
+  // filtered 上方已截断到 maxRows，可见行数就是它自身；无命中时那行提示正好占一行。
+  const rows = showList ? Math.max(filtered.length, 1) : 0;
   // 每次都 setSize（不缓存）：show 会按 config 尺寸重置窗口，每次 render 强制贴回内容高度。
   const height = CHROME + (showList ? GAP + rows * ROW_H : 0);
   win.setSize(new LogicalSize(640, height)).catch(() => {});
 
-  // 提示栏随状态切换：空态收起 = 「↓ 常用 / Esc 隐藏」；列表可见 = 「↑↓ 选择 / ↵ 启动 …」。
+  // 提示栏随状态切换：空态收起 = 「↓ 常用 / Esc 隐藏」；列表可见 = 「↑↓ 选择 / ↵ 启动 …」；
+  // 无命中 = 只剩 Esc（其余键都不成立）。
   // 空态下那些键（除 ↓ 展开外）都不生效，显示出来只会误导。
   hintRecent.hidden = showList;
   footer.classList.toggle("empty", !showList);
+  footer.classList.toggle("no-hits", noHits);
   // Esc 的含义分两级：展开态先收起常用列表，其余情况直接隐藏窗口。
   escLabel.textContent = browsing ? "收起" : "隐藏";
 }
@@ -465,6 +484,13 @@ function avatarEl(a: AppInfo): HTMLElement {
   if (a.icon) {
     const img = document.createElement("img");
     img.src = a.icon;
+    // 只在某条路径**第一次**拿到图标时淡入。冷启动时这一格此前显示的是字母兜底，
+    // 淡入把"字母忽然换成图标"的硬切换成一次渐显（时长/曲线走 --dur / --ease）。
+    // 之后的重建（敲键、rescan、index-updated）都直接出图，不再重播。
+    if (!iconRevealed.has(a.launchPath)) {
+      iconRevealed.add(a.launchPath);
+      img.className = "icon-in";
+    }
     return img;
   }
   const av = document.createElement("div");
