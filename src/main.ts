@@ -2,6 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { AppMatcher, type AppInfo, type UsageMap } from "./matcher";
+// 候选行的 Tailwind 类配方。单独成文件是为了让 Tailwind 的扫描范围能收紧到
+// 「只有本文件 + index.html」—— 否则 style.css 的注释和本文件的代码字符串
+// 会被当成候选类，凭空生成约 20% 的无用 CSS。理由与纪律见 ui-classes.ts 头部。
+import { ROW, ROW_ACTIVE, ROW_IDX, ROW_META, ROW_NAME, ROW_SUB } from "./ui-classes";
 
 // 检索匹配深模块：index 重建拼音索引、search 排序返回。分层/同音抑制全藏其内部。
 const matcher = new AppMatcher();
@@ -385,27 +389,31 @@ function render() {
   list.textContent = "";
   filtered.forEach((a, i) => {
     const li = document.createElement("li");
-    li.className = i === selected ? "active" : "";
+    // 行的类配方在 ui-classes.ts（Step 3b'）。几何与状态留在 style.css 的 #results li：
+    // 那里的 height/margin 直接参与上面的 ROW_H 算式；而 :hover / .active 带 #results
+    // ID 作用域，特异性 (1,1,1) 压得住 (0,1,0) 的原子类 —— 所以"选中态压得住悬停态"
+    // 不依赖 Tailwind 的输出排序。
+    li.className = i === selected ? `${ROW} ${ROW_ACTIVE}` : ROW;
 
     // 序号：与 Alt+数字 直接对应（1..9，0 = 第 10 项）。超出十项仍按真实序号显示，
     // 只是没有对应的单键可敲。
     const idx = document.createElement("span");
-    idx.className = "idx";
+    idx.className = ROW_IDX;
     idx.textContent = String(i + 1);
     li.appendChild(idx);
 
     li.appendChild(avatarEl(a));
 
     const meta = document.createElement("div");
-    meta.className = "meta";
+    meta.className = ROW_META;
     const nameEl = document.createElement("span");
-    nameEl.className = "name";
+    nameEl.className = ROW_NAME;
     nameEl.textContent = a.name;
     meta.appendChild(nameEl);
     const sub = subtitle(a);
     if (sub) {
       const c = document.createElement("span");
-      c.className = "sub";
+      c.className = ROW_SUB;
       c.textContent = sub;
       meta.appendChild(c);
     }

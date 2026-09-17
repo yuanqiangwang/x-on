@@ -8,17 +8,23 @@
   </head>
   <body>
     <div id="app">
-      <div id="searchrow">
+      <!-- 搜索行的布局/排版在 class 上（Step 3a）。每条原子类对应原来哪条 CSS、以及
+           哪几个值不能动，见 src/style.css 的「搜索行」注释块 —— 注释放在 CSS 里
+           不占发布体积（会被压缩掉），放这里会随 HTML 一起发出去。 -->
+      <div id="searchrow" class="flex items-center gap-2 pb-2">
         <!-- 前导图标：内联 SVG（16px 线性放大镜），颜色随父级 currentColor。
              原来是 ASCII 的 ›，终端味最重、且要 18px 字号才站得住，换掉。 -->
-        <span class="mark" aria-hidden="true">
+        <span class="mark flex items-center text-muted leading-none select-none" aria-hidden="true">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
                stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
             <circle cx="7" cy="7" r="4.4" />
             <path d="M10.4 10.4 14 14" />
           </svg>
         </span>
-        <input id="search" type="text" autocomplete="off" spellcheck="false" placeholder="搜索应用…" />
+        <input
+          id="search"
+          class="flex-1 h-8 px-0 py-1 font-sans text-lead text-accent caret-accent bg-transparent border-0 outline-none placeholder:text-muted"
+          type="text" autocomplete="off" spellcheck="false" placeholder="搜索应用…" />
       </div>
       <ul id="results"></ul>
       <!-- 键位提示：列表可见时 4 条，空态只留「↓ 常用 / Esc」。刻意不列 Alt+Space 唤出：

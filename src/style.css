@@ -1,4 +1,42 @@
       /* -------------------------------------------------------------------
+         Tailwind CSS v4。
+
+         分三条 import 而不是一句 `@import "tailwindcss"`，是为了**显式排除
+         preflight**（Tailwind 的 base reset）。这个文件已经有一套手写 reset 与
+         排版约定（`* { box-sizing }`、`html, body`、`#results { list-style: none }`
+         …），preflight 会重置 input 的外观、ul 的 margin/padding、button 的
+         background —— 那会直接改写已经调好的搜索行与列表。视觉基线跑顺之后再单独
+         评估要不要引入。
+
+         `layer(...)` 把两段产物钉进 CSS 级联层：本文件其余规则是**无层级**的，
+         无层级样式在级联中优先于任何 @layer。Step 2 起，原先靠这条优先级兜住的
+         同名令牌（--radius-sm / --radius-md / --radius-lg）已改为在 @theme 里
+         单点声明，不再依赖层叠顺序。
+
+         ⚠️ @import 必须位于所有其它规则之前（仅 @layer 声明可在其前）。
+         ------------------------------------------------------------------- */
+      @layer theme, base, components, utilities;
+      @import "tailwindcss/theme.css" layer(theme);
+      /* -------------------------------------------------------------------
+         source(none)：关掉 Tailwind 的自动来源扫描（Step 3b'）。
+
+         默认行为是把整个项目都当候选来源 —— 包括本文件的注释和 main.ts 里的代码字符串。
+         实测后果：`@layer utilities` 里 58 个类名有 28 个没有任何元素引用，构成 26 条规则、
+         2350 字节，占产物的 **19.9%**。典型误报：注释里写 `text-[18px]` / `bg-background`
+         / `h-9` / `dark:bg-card` 就真生成这些类；main.ts 里 `display = "block"` 生成
+         `.block`、`ctxMenu.hidden` 生成 `.hidden`。
+
+         而注释里又**必须**提类名（不提就没法读代码），所以解法是收紧扫描范围，
+         不是改注释 —— 改注释会反复回归。
+
+         ⚠️ 纪律：下面 @source 列出的两个文件就是全部来源。新增任何"带 Tailwind 类名的
+         文件"必须同步加进来，否则那些类不会被生成 —— **静默失效：构建不报错，只是样式没了**。
+         ------------------------------------------------------------------- */
+      @import "tailwindcss/utilities.css" layer(utilities) source(none);
+      @source "../index.html"; /* 搜索行的原子类（Step 3a） */
+      @source "./ui-classes.ts"; /* 候选行的类配方（Step 3b'） */
+
+      /* -------------------------------------------------------------------
          设计令牌。近黑底 + 终端绿；灰阶统一带绿调（hue≈150），不用纯灰（纯灰发死）。
          文本三级：强 15:1 / 正文 10:1 / 次级 4.8:1 —— 11px 小字也要过 WCAG AA，
          旧值 #58655c 只有 3.3:1，注释、序号、footer 全都不达标。
@@ -59,10 +97,11 @@
 
            动效只允许作用在不参与布局的属性上（颜色 / 背景 / 描边）。任何改变高度的
            过渡都会和 setSize 的异步 IPC 抢帧，那是 roadmap 1.1 要解决的问题，
-           不是靠加动画能绕开的。 */
-        --radius-sm: 4px;
-        --radius-md: 8px;
-        --radius-lg: 10px;
+           不是靠加动画能绕开的。
+
+           ⚠️ 圆角不在这里声明：--radius-sm/md/lg 与 Tailwind 默认主题同名，两处
+           各写一份的话"谁生效"取决于级联层，是隐式耦合。它们已移入下方 @theme，
+           成为唯一来源（值不变，仍是 4 / 8 / 10px）。 */
         --space-xs: 4px;
         --space-sm: 8px;
         --space-md: 12px;
@@ -96,6 +135,115 @@
         --shadow-1: rgba(20, 32, 26, 0.16);
         --shadow-2: rgba(20, 32, 26, 0.14);
       }
+
+      /* -------------------------------------------------------------------
+         Tailwind 主题映射（Step 2）。
+
+         方向是单向的：**现有令牌是基底，Tailwind 只是它的投影**。
+
+             现有令牌 (:root)  →  @theme 映射  →  shadcn 语义别名  →  原子类
+
+         不是反过来。所以 settings.json 的 colors 覆盖、<html data-theme> 的主题
+         切换、以及 --bg 回传原生窗口背景刷子这套机制全都不受影响 —— Tailwind 这层
+         不持有任何颜色值，只多提供"能写类名"这个入口。
+
+         用 @theme inline 而不是 @theme：inline 让工具类直接输出 `var(--bg)`，而不是
+         经过 Tailwind 在 :root 生成的 `--color-bg` 中转。少一层间接，也避免主题变量
+         被固化 —— 否则 html[data-theme="light"] 与行内 colors 覆盖会断链。
+         ------------------------------------------------------------------- */
+
+      /* 暗色变体：本应用用 <html data-theme> 选主题，不用 .dark 类，
+         所以默认的 dark:* 变体在本项目里永远不会命中，必须重定向。 */
+      @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+      /* 圆角：这里就是唯一来源（原 :root 里的三行已移除）。用 @theme 而非
+         @theme inline，值是字面量、无需引用别的变量；Tailwind 会把它们输出成
+         :root 上的自定义属性，所以现有规则里的 var(--radius-*) 照常解析。 */
+      @theme {
+        --radius-sm: 4px;
+        --radius-md: 8px;
+        --radius-lg: 10px;
+      }
+
+      @theme inline {
+        /* ---- 间距刻度 ----------------------------------------------------
+           --spacing 是 Tailwind 数值刻度的乘数（p-4 = calc(var(--spacing) * 4)）。
+           钉成 4px 而不是默认的 0.25rem，是为了让数值刻度与 --space-* 逐档对齐：
+             1 = 4px = --space-xs    2 = 8px  = --space-sm
+             3 = 12px = --space-md   4 = 16px = --space-lg
+           顺带免疫根字号变化 —— 窗口尺寸是像素算死的，rem 在这里只多一层不确定性。
+           控件高度：h-8 = 32px（搜索行）、h-9 = 36px（候选行卡片）。 */
+        --spacing: 4px;
+
+        /* ---- 排版刻度 ----------------------------------------------------
+           从现有规则里提出来，免得在工具类里写 text-[18px] 这种任意值 —— 任意值
+           等于把数值藏进 HTML，正是这次要消掉的东西。带 --line-height 的伴生键
+           会让一个类同时定字号和行高，行高被"钉死"这件事就写在一处。
+
+           ⚠️ 名字按**层级**命名而不是按位置：text-* 既是字号命名空间也是颜色
+           命名空间，叫 text-input 会和已有的 --color-input 撞车、解析结果不定。 */
+        --text-lead: 18px; /* 搜索输入：18 / 24 */
+        --text-lead--line-height: 24px;
+        --text-body: 14px; /* 候选名：14 / 1.25 */
+        --text-body--line-height: 1.25;
+        --text-meta: 11px; /* 副标题：11 / 1.2 */
+        --text-meta--line-height: 1.2;
+        --text-hint: 11px; /* 序号 / footer：11 / 16 */
+        --text-hint--line-height: 16px;
+
+        /* ---- 颜色：全部引用现有令牌，不复制任何值 ------------------------- */
+        --color-bg: var(--bg);
+        --color-raised: var(--bg-raised);
+        --color-fg: var(--text);
+        --color-fg-strong: var(--text-head);
+        --color-muted: var(--muted);
+        --color-accent: var(--accent);
+        --color-accent-dim: var(--accent-dim);
+        --color-accent-faint: var(--accent-faint);
+        --color-accent-row: var(--accent-row);
+        --color-border: var(--border);
+        --color-border-raised: var(--border-raised);
+        --color-hover: var(--hover);
+
+        /* ---- shadcn 语义别名 ---------------------------------------------
+           第二层，映射到上面那层，不新增颜色。目的是让从 shadcn 抄来的类配方
+           （bg-background / text-muted-foreground / ring-ring…）能直接落地，
+           而底层始终是这套令牌 —— 抄配方，不抄组件源码。 */
+        --color-background: var(--bg);
+        --color-foreground: var(--text);
+        --color-card: var(--bg-raised);
+        --color-card-foreground: var(--text-head);
+        --color-muted-foreground: var(--muted);
+        --color-primary: var(--accent);
+        --color-primary-foreground: var(--bg);
+        --color-secondary: var(--hover);
+        --color-secondary-foreground: var(--text);
+        --color-accent-foreground: var(--accent);
+        --color-input: var(--border);
+        --color-ring: var(--accent-dim);
+
+        /* ---- 字体 --------------------------------------------------------
+           --font 由 main.ts 按 settings.json 的 font 写进 <html> 行内样式；
+           映射之后 font-sans 自动跟着用户选的字体走，不需要额外同步。 */
+        --font-sans: var(--font);
+
+        /* ---- 浮层投影 ----------------------------------------------------
+           与 #ctxmenu 现在写死的两层阴影同值，提成令牌供 Step 3 的浮层复用。
+           Step 2 不动任何现有规则，所以这里先只是定义。 */
+        --shadow-raised: 0 2px 6px var(--shadow-1), 0 12px 28px var(--shadow-2);
+
+        /* ---- 动效 --------------------------------------------------------
+           只给不参与布局的属性用（颜色 / 背景 / 描边）。任何改变高度的过渡都会和
+           setSize 的异步 IPC 抢帧，见 roadmap 1.1。 */
+        --ease-app: var(--ease);
+        --default-transition-duration: var(--dur);
+        /* ⚠️ 这一条不能省。transition-colors / transition-shadow 这类工具类输出的
+           transition-timing-function 读的是 --default-transition-timing-function，
+           不映射就退回 Tailwind 默认的 cubic-bezier(0.4, 0, 0.2, 1) —— 和现有
+           120ms cubic-bezier(0.2, 0, 0, 1) 不是一条曲线。换写法必须连默认值一起换。 */
+        --default-transition-timing-function: var(--ease);
+      }
+
       * { box-sizing: border-box; }
       html, body {
         margin: 0;
@@ -116,15 +264,33 @@
         padding: var(--space-md) var(--space-lg) var(--space-sm);
       }
 
-      /* 搜索行：一个前导图标 + 输入框。 */
+      /* 搜索行：一个前导图标 + 输入框。
+         布局与排版已改为 index.html 上的 Tailwind 原子类（Step 3a），这里只留
+         "左实右渐隐"的分隔线 —— 它需要 5 个互相咬合的背景属性（image / repeat /
+         origin / size / position），写成原子类是一串带逗号和下划线的任意值，
+         比这里更难核对，收益为负，所以刻意保留。
+
+         index.html 上那串 class 与原 CSS 的逐条对应（只换写法，不换数值）：
+           flex items-center gap-2 pb-2   ← display:flex / align-items:center
+                                            / gap:var(--space-sm) / padding-bottom:var(--space-sm)
+           flex-1 h-8 px-0 py-1           ← flex:1 / height:32px / padding:4px 0
+                                            ⚠️ px-0 不能省：UA 样式表给 input 的左右内边距是
+                                            2px，原来靠 padding 简写归零，少了它输入框会缩进。
+           font-sans text-lead            ← font:inherit + font-size:18px + line-height:24px
+                                            （原来 font 简写必须写在 line-height 之前，否则行高被
+                                              一起重置；换成工具类后这个顺序陷阱自然消失）
+           text-accent caret-accent       ← color / caret-color
+           bg-transparent border-0 outline-none
+           placeholder:text-muted         ← ::placeholder 的 color
+           .mark 上的 flex items-center text-muted leading-none select-none
+                                          ← display:flex / align-items:center / color:var(--muted)
+                                            / line-height:1 / user-select:none
+
+         ⚠️ h-8(32px) + py-1(上下各 4px) + pb-2(8px) + 下面那 1px 边框参与 main.ts 的
+         CHROME 常量算式（12 + 32 + 8 + 1 + …），改这里必须回头同步 CHROME。 */
       #searchrow {
-        display: flex;
-        align-items: center;
-        gap: var(--space-sm);
-        padding-bottom: var(--space-sm);
-        /* 分隔线改成"左实右渐隐"：等宽实线会和输入行抢焦点，也在视觉上把搜索行
-           框成一条独立横条。1px 的盒子必须保留（CHROME 依赖它），所以只换画法 ——
-           background-origin: border-box + 100%×1px 的渐变条，正好落在原边框的位置。 */
+        /* 1px 的盒子必须保留（CHROME 依赖它），所以不删边框、只让颜色透明，
+           再用 background-origin: border-box + 100%×1px 的渐变条画在它的位置上。 */
         border-bottom: 1px solid transparent;
         background-image: linear-gradient(90deg, var(--accent-dim), var(--accent-zero) 72%);
         background-repeat: no-repeat;
@@ -132,35 +298,6 @@
         background-size: 100% 1px;
         background-position: bottom;
       }
-      #searchrow .mark {
-        /* 图标退到次级色：强调色只留给"输入文字"和"选中行"两个焦点，
-           一个亮绿的前导符会把注意力从用户正在敲的字上拉走。 */
-        display: flex;
-        align-items: center;
-        color: var(--muted);
-        line-height: 1;
-        user-select: none;
-      }
-      #search {
-        flex: 1;
-        /* 高度钉死：整窗高度是按像素算死的（main.ts 的 CHROME），而 font 是用户可配的。
-           若让 line-height 走 normal，换个行高高的中文字体（现网就有人在用霞鹜文楷，
-           normal 行高比雅黑高一截）就会把搜索行撑高好几像素，窗口随之变矮，最后一行
-           卡片的高亮底边被 #results 的 overflow: hidden 裁掉。
-           32 = 上下各 4px padding + 24px 行高，与 CHROME 的算式一一对应。 */
-        height: 32px;
-        padding: var(--space-xs) 0;
-        font: inherit;
-        font-size: 18px;
-        /* 必须写在 font: inherit 之后 —— font 是简写，会把 line-height 一起重置掉。 */
-        line-height: 24px;
-        color: var(--accent);
-        caret-color: var(--accent);
-        background: transparent;
-        border: none;
-        outline: none;
-      }
-      #search::placeholder { color: var(--muted); }
 
       #results {
         list-style: none;
@@ -177,7 +314,27 @@
          可见卡片 = --row-h − 2px，剩下 2px 走 margin-bottom：**行距仍等于 --row-h**，
          所以 main.ts 的 rows * ROW_H 算式不用动；而那 2px 是留给窗口裁切的余量 ——
          窗口高度是整数、真实内容高度含分数值，差零点几像素时被 overflow 吃掉的应该是
-         这条余量，而不是卡片的底边。左右各 2px 同理，让圆角露在底色上。 */
+         这条余量，而不是卡片的底边。左右各 2px 同理，让圆角露在底色上。
+
+         ---- Step 3b 的切分口径：状态留 CSS，外观搬原子类 --------------------
+         这条规则现在只剩"盒子怎么摆"：几何四件套（height / margin / border /
+         overflow）里，height 与 margin 直接参与 main.ts 的 rows * ROW_H 算式。
+         写成 h-[calc(var(--row-h)-2px)] 只是把同一个算式搬进 class 字符串 ——
+         读代码的人反而看不出它和 ROW_H 的关系，所以刻意留在这里。display /
+         align-items / gap / padding 同属"盒子怎么摆"，一并留着，拆开更难核。
+
+         已搬走的（在 main.ts 生成 li 的 class 上，逐条对应）：
+           rounded-md       ← border-radius: var(--radius-md)
+           text-fg          ← color: var(--text)   （--color-fg 映射到 --text）
+           transition-colors ← transition: background-color / border-color
+                               （旧写法只列这两条；transition-colors 还含 color /
+                                 outline-color / fill / stroke —— 这些属性在本行都不
+                                 会变，且同样不进布局，不改变行为）
+
+         ⚠️ li:hover / li.active / li.active .idx / li.active .name 全部留在 CSS。
+         它们是**状态**而不是外观，而且带 #results ID 作用域：特异性 (1,1,1) 与
+         (1,2,1) 天然压过原子类的 (0,1,0)。所以"选中态压得住悬停态"这件事不依赖
+         Tailwind 的输出排序 —— 这才是把状态留在 CSS 的实质理由。 */
       #results li {
         display: flex;
         align-items: center;
@@ -188,25 +345,17 @@
         padding: 0 var(--space-sm);
         margin: 0 2px 2px;
         border: 1px solid transparent;
-        border-radius: var(--radius-md);
-        color: var(--text);
-        /* 只过渡颜色类属性：它们不进布局，不会和窗口自适应的异步 setSize 抢帧。 */
-        transition:
-          background-color var(--dur) var(--ease),
-          border-color var(--dur) var(--ease);
       }
       /* 悬停必须比选中弱一档，否则"选中了哪一行"看不出来（去色后更明显）。
          写在 .active 之前，悬停才不会反过来盖掉选中态。 */
       #results li:hover { background: var(--hover); }
-      /* 序号：与 Alt+数字 快速启动对应。等宽数字，位数变化不撑动后面的图标。 */
-      #results li .idx {
-        flex: 0 0 12px;
-        text-align: center;
-        color: var(--muted);
-        font-size: 11px;
-        font-variant-numeric: tabular-nums;
-        user-select: none;
-      }
+      /* 序号：与 Alt+数字 快速启动对应。等宽数字，位数变化不撑动后面的图标。
+         定宽 12px 是布局几何，留下；排版与颜色已搬到原子类（见 main.ts）：
+           text-hint(11/16) text-muted tabular-nums text-center select-none
+         用 text-hint 而不是 text-meta：序号与 footer 同为 11/16 这一档，
+         行高被钉死也比继承 normal 更可预期（行内是 align-items:center 的弹性项，
+         两者都不影响行高，但钉死的那个不随用户换字体而变）。 */
+      #results li .idx { flex: 0 0 12px; }
       #results li.active .idx { color: var(--accent); }
       /* 选中态：实底 + 描边（替代原来的 2px 左侧竖条）。底与描边都用 0.3 上下的
          弱强度，文字才敢用满强度的 --accent —— 底一旦做实，绿字对底色的对比度
@@ -249,28 +398,18 @@
         color: inherit;
         font-weight: 400;
       }
-      #results li .meta { display: flex; flex-direction: column; min-width: 0; }
-      #results li .name {
-        color: var(--text-head);
-        font-size: 14px;
-        line-height: 1.25;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
+      /* .meta / .name / .sub 的排版、颜色与单行截断已全部搬到原子类（见 main.ts）：
+           .meta  flex flex-col min-w-0   ← display / flex-direction / min-width:0
+           .name  text-body(14/1.25) text-fg-strong truncate
+           .sub   text-meta(11/1.2)  text-muted     truncate
+         （truncate = white-space:nowrap + overflow:hidden + text-overflow:ellipsis，
+           与原来那三条逐字对应。）
+
+         ⚠️ .name / .idx 的 class 名必须保留：下面两条选中态规则靠它定位。
+            .meta / .sub 保留是为了 DevTools 里还能认人，没有 CSS 依赖。 */
       #results li.active .name {
         color: var(--accent);
         text-shadow: var(--glow);
-      }
-      /* 副标题：本地化名下面的原生名（控制面板 / control panel），见 main.ts subtitle。
-         名称与副标题共占一行行高，超长单行截断；meta 的 min-width:0 保证省略号生效。 */
-      #results li .sub {
-        color: var(--muted);
-        font-size: 11px;
-        line-height: 1.2;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
       }
 
       /* 快捷键提示：键帽用强调色、说明压到次级；用 gap 拉开，不靠 &nbsp; 拼空格。 */
