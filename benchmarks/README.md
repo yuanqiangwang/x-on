@@ -25,10 +25,10 @@ across runs.
 | **CPU while idle** | `Process.CPU` delta over the sampling window, divided by wall time. Percent of one core. | Wakeups/s. A process can idle at 0.1% CPU and still wake hundreds of times a second, which is what actually costs battery. Not measured here (no `powermetrics` equivalent on Windows without ETW). |
 | **Installer size** | The newest artifact under `target/release/bundle/` (NSIS `.exe` or `.msi`); falls back to the bare `xon.exe` if no bundle was built. | The WebView2 runtime, which Windows already provides — so this is *not* comparable to a bundled-Chromium app's on-disk size. |
 
-### Two definitions that produced wrong numbers
+### Three definitions that produced wrong numbers
 
-Both of these were shipped in the first version of this script. Recording them
-so the same mistake is not made twice.
+All of these were shipped in the script. Recording them so the same mistake is
+not made twice.
 
 - **"Size on disk" summed every `.exe`/`.dll` under `target/release` → 206 MB.**
   That is the Cargo build directory: `build/` (126 MB of `build-script-build.exe`)
@@ -38,6 +38,19 @@ so the same mistake is not made twice.
   spawns its utility/gpu/renderer processes as *grandchildren*, so a single level
   captured 2 of 7 processes and missed 289 MB. Recursive walk: **276.7 MB private /
   523.6 MB working set over 7 processes.**
+- **"Memory" then collected *every* descendant → 3,606 MB.** Found 2026-09-17.
+  xon is a launcher, so every app started from it becomes a **direct child** and
+  outlives it. On the day of the measurement Weixin, QQ, Obsidian and
+  aTrustTray were all children of the xon process (creation timestamps *after*
+  xon's, so genuinely spawned by it, not recycled PIDs). The recursive walk was
+  right for WebView2 and wrong for everything else: it made the headline figure
+  a function of "which apps did you launch from xon today". The 2026-09-10
+  baseline of 276.7 MB was correct **by accident** — nothing had been launched
+  from xon in that session. The walk is now restricted to `xon` +
+  `msedgewebview2` + `crashpad_handler` (`$groupNames` in `bench.ps1`), and does
+  not descend through anything else. Re-measured the same day: **277.4 MB private
+  / 437.7 MB working set over 7 processes** — flat against the 0.6.0 baseline
+  (276.7 MB), which is what the metric was always supposed to say.
 
 ## Running it
 
@@ -112,7 +125,7 @@ you extend the script, do not "simplify" these away.
 Two smaller ones: the injected character lands wherever focus is, so the script
 waits on `GetForegroundWindow` instead of sleeping a fixed amount (a dropped
 keystroke is indistinguishable from "no results" from the outside); and the
-parameter is named `$procId`, not `$pid` — `$pid` is a read-only automatic
+tree-walk cursor is named `$id`, not `$pid` — `$pid` is a read-only automatic
 variable.
 
 ## Interpreting the current baseline

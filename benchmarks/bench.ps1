@@ -256,6 +256,22 @@ if (-not $ExePath) {
 $procName = "xon"
 if ($ExePath) { $procName = [System.IO.Path]::GetFileNameWithoutExtension($ExePath) }
 
+# Which processes count toward xon's own footprint.
+#
+# xon is a LAUNCHER: every app the user starts from it becomes a DIRECT CHILD of
+# the xon process, and those children outlive xon. A naive "collect every
+# descendant" walk therefore measures "which apps did you launch from xon today"
+# instead of what xon costs. Measured 2026-09-17: Weixin, QQ, Obsidian and
+# aTrustTray all showed up as children (creation timestamps after xon's, so real
+# children, not recycled PIDs) and turned a true 281 MB into a reported
+# 3,606 MB. The 2026-09-10 baseline was only correct by accident — nothing had
+# been launched from xon in that session.
+#
+# So: keep xon itself plus the WebView2 group, and never descend through a
+# non-member. WebView2's utility/gpu/renderer grandchildren are all
+# `msedgewebview2`, so the recursion depth the metric needs is unaffected.
+$groupNames = @($procName, 'msedgewebview2', 'crashpad_handler')
+
 $appVersion = "unknown"
 $versionFile = Join-Path $root "src-tauri/tauri.conf.json"
 if (Test-Path $versionFile) {
@@ -442,6 +458,8 @@ if (-not $SkipIdle) {
         # Recurse. WebView2 spawns its utility/gpu/renderer processes as
         # grandchildren, so a single level hides ~55% of the group's memory
         # (measured: 229 MB one level vs 518 MB working set for the full tree).
+        # Only $groupNames members are kept and descended through — see the
+        # definition above for why everything else is somebody else's memory.
         # NB: not named $pid — that is a read-only automatic variable.
         $seen = @{}
         $out = New-Object System.Collections.Generic.List[object]
@@ -454,12 +472,13 @@ if (-not $SkipIdle) {
             if ($seen.ContainsKey($id)) { continue }
             $seen[$id] = $true
             $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
-            if ($proc) { $out.Add($proc) }
+            if ($proc -and ($groupNames -contains $proc.ProcessName)) { $out.Add($proc) }
             if ($depth[$id] -lt 4) {
                 Get-CimInstance Win32_Process -Filter "ParentProcessId = $id" -ErrorAction SilentlyContinue |
                     ForEach-Object {
                         $kid = [int]$_.ProcessId
-                        if (-not $seen.ContainsKey($kid)) {
+                        $kidName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+                        if (-not $seen.ContainsKey($kid) -and ($groupNames -contains $kidName)) {
                             $depth[$kid] = $depth[$id] + 1
                             $queue.Enqueue($kid)
                         }
