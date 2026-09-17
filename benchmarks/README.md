@@ -103,6 +103,12 @@ pnpm bench
   so ESC did nothing and typing reported 0/N. Start xon the way a user does.
 - **Every hotkey number suspiciously identical** — you are probably measuring
   a debug build, or the machine is loaded enough that the poll loop dominates.
+- **Typing samples split into two clusters** (e.g. ~64 ms and ~80 ms, roughly one
+  60 Hz frame apart) — the machine was busy; the fast cluster is the app, the slow
+  one is everything else. Re-run when it is quieter instead of reporting the p95
+  from this run. Verified 2026-09-17: two runs at 419 processes were bimodal, a
+  third at 397 processes was unimodal, and a 30-run sequential probe then landed
+  **30/30** in the fast cluster.
 
 ## Interpreting the numbers
 
@@ -140,47 +146,47 @@ variable.
 
 ## Interpreting the current baseline
 
-As of 2026-09-17 (Windows 11, Core Ultra 7 255H, xon 0.7.1 release), measured on
-the same machine in the same session immediately before and after the
-Tailwind v4 / shadcn-visual-layer migration:
+As of 2026-09-17 (Windows 11, Core Ultra 7 255H, xon 0.7.1 release). The move to
+Tailwind v4 was measured before and after on the same machine in the same
+session; the `after` column is the third and cleanest of three runs.
 
 | Metric | before | after | Δ |
 | --- | --- | --- | --- |
-| Hotkey → visible (p50 / p95) | 4.3 / 11.1 ms | 4.3 / 8.2 ms | 0 / −2.9 |
-| Keystroke → results (p50 / p95) | 64.7 / 66.2 ms | 69.0 / 81.1 ms | +4.3 / +14.9 |
-| Memory, idle (private) | 277.4 MB | 251.3 MB | −26.1 |
-| Memory, idle (working set) | 437.7 MB | 518.4 MB | +80.7 |
-| CPU while idle | 0.62 % | 0.21 % | −0.41 |
+| Hotkey → visible (p50 / p95) | 4.3 / 11.1 ms | 4.2 / 7.0 ms | −0.1 / −4.1 |
+| Keystroke → results (p50 / p95) | 64.7 / 66.2 ms | 64.3 / 65.7 ms | −0.4 / −0.5 |
+| Memory, idle (private) | 277.4 MB | 254.8 MB | −22.6 |
+| Memory, idle (working set) | 437.7 MB | 505.3 MB | +67.6 |
+| CPU while idle | 0.62 % | 0.00 % | −0.62 |
 | Installer size | 1.47 MB | 1.47 MB | 0 |
 | Bundle on disk (JS+CSS+HTML, gzip) | 150,145 B | 151,523 B | +1,378 (+0.92 %) |
 
-- **Hotkey is not the bottleneck, and it did not move.** p50 4.3 ms is far below
+- **Hotkey is not the bottleneck, and it did not move.** p50 4.2 ms is far below
   the ~100 ms threshold a user perceives as instantaneous. Little left to win.
-- **Keystroke→results is ~16× slower** (p50 69.0 ms) and is where the perceived
-  latency lives. Roughly 40 ms of that is the fixed input debounce; the rest is
-  filter + full list rebuild + icon IPC. **Optimizing the summon path cannot
-  improve this number.**
-- **The `after` typing distribution is bimodal — read its p95 with that in mind.**
-  Two independent 15-run samples each split roughly 50/50 between a ~64.5 ms
-  cluster and a ~80 ms one (≈16 ms apart, about one 60 Hz frame). The `before`
-  sample was unimodal (63.3–72.5 ms). Both `after` runs also needed 2–3 re-syncs
-  where the `before` run needed none. The likely cause is machine load, not the
-  migration: the `after` session had **419 processes** plus an agent working,
-  against 377 for `before`, and the prerequisites above ask for a quiet machine.
-  **The +4.3 ms p50 sits just above the ~1–3 ms resolution this harness can
-  claim, and the p95 delta is a distribution-shape artifact.** A re-run on an
-  idle machine is needed to call it either way. For scale, the migration's total
-  measured cost is 1,378 bytes of gzip — it is not a plausible source of 15 ms.
-- **Memory is overwhelmingly WebView2, not xon.** Of 251.3 MB private at idle,
-  the Rust process accounts for **14.5 MB**; the other ~237 MB is six
+- **Keystroke→results did not move either** — p50 64.3 ms against 64.7 ms, inside
+  the ~1–3 ms resolution. Roughly 40 ms of it is the fixed input debounce; the
+  rest is filter + full list rebuild + icon IPC. **Optimizing the summon path
+  cannot improve this number.**
+- **The typing metric is load-sensitive, and it bit us during this measurement.**
+  The first two runs of the day came out **bimodal** — each split roughly 50/50
+  between a ~64.5 ms cluster and a ~80 ms one (≈16 ms apart, about one 60 Hz
+  frame), with 2–3 re-syncs, which pushed p95 to 135 ms on one run. A third run
+  on a slightly quieter machine (397 processes vs 419) was unimodal at
+  64.3/65.7 ms with **zero** re-syncs, and a separate 30-run sequential probe
+  recorded **30/30 in the fast mode** (median 64.5 ms, every run growing the
+  window from 102 px to 338 px). So the slow mode was ambient load, not a code
+  path. **Never quote a p95 off a single run** — if the sample is bimodal, the
+  run measured the machine as much as the app; re-run it.
+- **Memory is overwhelmingly WebView2, not xon.** Of 254.8 MB private at idle,
+  the Rust process accounts for **14.5 MB**; the other ~240 MB is six
   `msedgewebview2.exe` processes. That is the unavoidable cost of a webview UI on
   Windows, and it is why "rewrite the frontend in a framework" would change
-  nothing. The number xon actually controls is the 14.5 MB. Note that private and
-  working set moved in *opposite* directions (277.4 → 251.3 private, 437.7 → 518.4
-  working set), so WebView2's allocation split is not stable enough for a 26 MB
-  private-bytes delta to mean anything on its own.
-- **CPU while idle is 0.21%.** Fine, and not worth chasing.
-- **Cold start is `n/a`** here, as in every baseline recorded so far — it needs
+  nothing. The number xon actually controls is the 14.5 MB. Two caveats before
+  reading the Δ: private and working set move in **opposite** directions
+  (277.4 → 254.8 private but 437.7 → 505.3 working set), and the `before` run was
+  taken while a dev instance was also on the machine, so the binary behind it
+  cannot be confirmed to have been the release build.
+- **CPU while idle is 0.0–0.6%.** Fine, and not worth chasing.
+- **Cold start is `n/a`**, as in every baseline recorded so far — it needs
   `-ColdStart`, which is opt-in because it kills the running instance.
 
 ## Files
