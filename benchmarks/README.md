@@ -186,8 +186,16 @@ session; the `after` column is the third and cleanest of three runs.
   taken while a dev instance was also on the machine, so the binary behind it
   cannot be confirmed to have been the release build.
 - **CPU while idle is 0.0–0.6%.** Fine, and not worth chasing.
-- **Cold start is `n/a`**, as in every baseline recorded so far — it needs
-  `-ColdStart`, which is opt-in because it kills the running instance.
+- **Cold start is `n/a` in the table**, as in every baseline recorded so far — the
+  harness only measures it with `-ColdStart`, which is opt-in because it kills the
+  running instance. Measured separately on 2026-09-17 with the same definition
+  (kill → launch → first usable window, i.e. the accelerator answers): **1529 /
+  1229 / 813 ms** across three consecutive attempts, first one coldest — the OS
+  file cache and WebView2's own caches stay warm between attempts. So call it
+  **~0.8–1.5 s**. Two caveats: it was launched through `explorer.exe`, which adds
+  a little shell overhead that `-ColdStart`'s direct `Start-Process` would not;
+  and with n=3 and a clear downward trend, only the first figure is really "cold".
+  Run `pnpm bench -- -ExePath … -ColdStart` for a number that belongs in the table.
 
 ## Files
 
