@@ -24,12 +24,15 @@
           type="text" autocomplete="off" spellcheck="false" placeholder="搜索应用…" />
       </div>
       <ul id="results"></ul>
-      <!-- 键位提示：空态只留「↓ 常用 / Esc」；刻意不列 Alt+Space —— 用户刚按它进来。 -->
+      <!-- 键位提示。空态两条（↓ 常用 / `/` 指令）；`↵` 的说明在指令模式下会变成
+           「确认 / 应用」，Ctrl+↵ 那组只在应用视图成立 —— 都由 main.ts 的 render 切换。
+           刻意不列 Alt+Space：用户刚按它进来。 -->
       <div id="footer" class="empty">
         <span id="hint-recent" hidden><b>↓</b> 常用</span>
+        <span id="hint-cmd" hidden><b>/</b> 指令</span>
         <span class="hint-list"><b>↑↓</b> 选择</span>
-        <span class="hint-list"><b>↵</b> 启动</span>
-        <span class="hint-list"><b>Ctrl+↵</b> 管理员 · <b>Alt+序号</b> 速启</span>
+        <span class="hint-list"><b>↵</b> <span id="enter-label">启动</span></span>
+        <span id="hint-admin" class="hint-list"><b>Ctrl+↵</b> 管理员 · <b>Alt+序号</b> 速启</span>
         <span id="hint-esc"><b>Esc</b> <span id="esc-label">隐藏</span></span>
       </div>
     </div>

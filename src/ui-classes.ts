@@ -80,6 +80,18 @@ export const ROW_NAME = "name text-body text-fg-strong truncate";
 export const ROW_SUB = "sub text-meta text-muted truncate";
 
 /**
+ * 选项行里标「当前生效」的那半截副标题（`/theme` 的二级列表用）。
+ *
+ * 与 ROW_SUB 占同一个位置（候选行的第二行），只在"这一项就是当前值"时换上它：
+ * 用强调色把这一行从旁边的说明文字里拎出来 —— 这是"选完生效"唯一的反馈，
+ * 用户得能一眼看出现在生效的是哪一项。文本形如 `当前 · 跟随 Windows`。
+ *
+ * 两行预算不变（仍是 .name + .sub 的 17.5 + 16 = 33.5 ≤ 34px），所以窗口高度算式
+ * 不受影响。text-accent 已被 index.html 的搜索框用到，这里只是换个组合。
+ */
+export const ROW_CURRENT = "sub text-meta text-accent truncate";
+
+/**
  * 无命中提示（Step 3d）：查询一条都没匹配上时，在列表里占一行候选的位置。
  * 复用小字档并压到次级色 —— 它是一条状态说明，不是候选。
  *

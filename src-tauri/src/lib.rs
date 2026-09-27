@@ -243,10 +243,10 @@ fn save_config(app: &AppHandle, cfg: &Config) -> Result<(), String> {
     persist_settings(app, &text)
 }
 
-/// Write the initial settings.json with explanatory comments (VS Code-style JSONC)
-/// so a first-time user sees what each field means and which needs a restart.
-fn write_default_settings_template(app: &AppHandle) -> Result<(), String> {
-    let template = r#"{
+/// settings.json 的初始模板（VS Code 风格 JSONC）。带注释是刻意的 —— 「哪些字段改后需
+/// 重启、哪些立即生效」只有这里说了，它是这个文件唯一的文档。抽成常量是因为
+/// `patch_settings` 在文件缺失时也要拿它当底稿。
+const DEFAULT_SETTINGS_TEMPLATE: &str = r#"{
   // 全局唤醒快捷键，改后需重启生效（只在启动时注册）
   "accelerator": "Alt+Space",
   // 开机自启：改后立即生效（写入/删除系统自启项）
@@ -262,7 +262,86 @@ fn write_default_settings_template(app: &AppHandle) -> Result<(), String> {
   // 选中行底、描边、悬停底等派生色会自动跟着算出来，不必逐个给
   "colors": {}
 }"#;
-    persist_settings(app, template)
+
+/// Write the initial settings.json with explanatory comments (VS Code-style JSONC)
+/// so a first-time user sees what each field means and which needs a restart.
+fn write_default_settings_template(app: &AppHandle) -> Result<(), String> {
+    persist_settings(app, DEFAULT_SETTINGS_TEMPLATE)
+}
+
+/// 逐行替换顶层字段的值，**其余文本一个字节都不动**（注释、缩进、字段顺序全保留）。
+///
+/// 只认「忽略缩进后以 `"key"` 开头」的行，所以注释行永远不会被误伤 —— 模板里的注释恰好
+/// 也会提到字段名（如 `// 主题：auto = …`），不跳过 `//` 就可能改错行。
+/// 找不到该字段（用户自己删过）时插到最后一个 `}` 之前；JSON5 允许尾随逗号，不必纠结。
+fn replace_top_level_field(source: &str, key: &str, value: &str) -> String {
+    let needle = format!("\"{key}\"");
+    let mut out = String::with_capacity(source.len() + value.len());
+    let mut done = false;
+    for line in source.lines() {
+        if !done {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with("//") && trimmed.starts_with(&needle) {
+                if let Some(rest) = trimmed[needle.len()..].trim_start().strip_prefix(':') {
+                    let indent = &line[..line.len() - trimmed.len()];
+                    let comma = if rest.trim_end().ends_with(',') { "," } else { "" };
+                    out.push_str(indent);
+                    out.push_str(&needle);
+                    out.push_str(": ");
+                    out.push_str(value);
+                    out.push_str(comma);
+                    out.push('\n');
+                    done = true;
+                    continue;
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if done {
+        return out;
+    }
+    // 字段不存在：插到最后一个 `}` 之前，保持它是一个合法（JSON5）对象。
+    let Some(pos) = out.rfind('}') else {
+        return out;
+    };
+    let mut head = out[..pos].trim_end().to_string();
+    if !head.ends_with('{') && !head.ends_with(',') {
+        head.push(',');
+    }
+    head.push('\n');
+    head.push_str("  ");
+    head.push_str(&needle);
+    head.push_str(": ");
+    head.push_str(value);
+    head.push('\n');
+    head.push_str(&out[pos..]);
+    head
+}
+
+/// 改 settings.json 里的一个顶层字段，并把改完的结果读回来。
+///
+/// 为什么不用 `save_config`：它走 `serde_json::to_string_pretty`，会把文件里的注释全部
+/// 抹掉 —— 而 `DEFAULT_SETTINGS_TEMPLATE` 写下的那批注释（哪些改后需重启、哪些立即生效）
+/// 是这个文件唯一的文档。字段级替换只动目标行，模板注释与用户自己的批注都留着。
+///
+/// 返回最新 `Config` 是必须的：`persist_settings` 记了 own_write，`apply_settings` 会因此
+/// 跳过这次通知（防回环），所以 `settings-changed` **不会**发出来 —— 调用方得拿这个返回值
+/// 自己应用，等事件是等不到的。
+fn patch_settings(app: &AppHandle, key: &str, value: &str) -> Result<Config, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join("settings.json");
+    let original = std::fs::read_to_string(&file).unwrap_or_default();
+    let source = if original.trim().is_empty() {
+        DEFAULT_SETTINGS_TEMPLATE
+    } else {
+        original.as_str()
+    };
+    let text = replace_top_level_field(source, key, value);
+    persist_settings(app, &text)?;
+    json5::from_str::<Config>(&text).map_err(|e| e.to_string())
 }
 
 /// The two start-menu roots we crawl: per-user and shared.
@@ -624,6 +703,40 @@ mod tests {
         let t = chm.to_string_lossy().to_string();
         assert!(drop_shortcut(&entry("XYZ App", &t)));
         std::fs::remove_file(&chm).ok();
+    }
+
+    /// 字段级替换只动目标行：注释、其它字段、缩进全部原样保留 —— 这正是它存在的理由
+    /// （`save_config` 那条路会把注释全抹掉）。
+    #[test]
+    fn replace_field_keeps_comments_and_siblings() {
+        let src = r#"{
+  // 主题：auto = 跟随 Windows；也可固定为 light 或 dark。改后立即生效
+  "theme": "auto",
+  "resultRows": 6
+}"#;
+        let out = replace_top_level_field(src, "theme", "\"dark\"");
+        assert!(out.contains(r#""theme": "dark","#), "值应被替换：{out}");
+        assert!(out.contains("// 主题：auto = 跟随 Windows"), "注释必须保留：{out}");
+        assert!(out.contains("\"resultRows\": 6"), "其它字段不能动：{out}");
+        // 注释行里出现的字段名不能被误当成赋值行（模板注释恰好会提字段名）。
+        assert_eq!(out.matches("\"theme\":").count(), 1, "只应有一处赋值：{out}");
+    }
+
+    /// 原字段没有逗号时不能硬加（会把文件写坏）。
+    #[test]
+    fn replace_field_preserves_missing_comma() {
+        let out = replace_top_level_field("{\n  \"theme\": \"auto\"\n}", "theme", "\"light\"");
+        assert_eq!(out, "{\n  \"theme\": \"light\"\n}\n");
+    }
+
+    /// 字段被用户删掉时插到最后一个 `}` 之前，且结果仍是合法 JSON5。
+    #[test]
+    fn replace_field_inserts_when_absent() {
+        let out = replace_top_level_field("{\n  \"resultRows\": 6\n}", "theme", "\"dark\"");
+        assert!(out.contains("\"theme\": \"dark\""), "应插入新字段：{out}");
+        let parsed: serde_json::Value = json5::from_str(&out).expect("插完仍应是合法 JSON5");
+        assert_eq!(parsed["theme"], "dark");
+        assert_eq!(parsed["resultRows"], 6);
     }
 }
 
@@ -1190,6 +1303,26 @@ fn get_config(app: AppHandle) -> Config {
     load_config(&app)
 }
 
+/// `/theme` `/light` `/dark` `/auto` 的写回出口。
+///
+/// 取值在 Rust 侧收窄，而不是只信前端：指令是以字符串进来的，这里拦一道，写进文件的值
+/// 就一定是后端认的三种之一。返回最新 `Config` —— 前端必须拿它自己 apply（理由见
+/// `patch_settings` 的注释：own_write 会抑制 `settings-changed`）。
+#[tauri::command]
+fn set_theme(app: AppHandle, theme: String) -> Result<Config, String> {
+    let value = theme.trim().to_ascii_lowercase();
+    if !matches!(value.as_str(), "auto" | "light" | "dark") {
+        return Err(format!("未知主题：{theme}（可用：auto / light / dark）"));
+    }
+    patch_settings(&app, "theme", &format!("\"{value}\""))
+}
+
+/// `/config` 的出口。复用托盘「打开配置文件…」那一套：确保文件存在 → 系统默认程序打开。
+#[tauri::command]
+fn open_settings(app: AppHandle) {
+    open_config(&app);
+}
+
 /// 主题/配色变化时同步原生窗口背景色。
 ///
 /// 窗口是不透明的（ADR 0001），`resize` 时新露出的区域先由窗口背景刷子画一帧；
@@ -1444,6 +1577,8 @@ pub fn run() {
             reveal_in_explorer,
             get_app_icons,
             get_config,
+            set_theme,
+            open_settings,
             set_window_background,
             get_usage
         ])

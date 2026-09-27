@@ -5,7 +5,26 @@ import { AppMatcher, type AppInfo, type UsageMap } from "./matcher";
 // 候选行的 Tailwind 类配方。单独成文件是为了让 Tailwind 的扫描范围能收紧到
 // 「只有本文件 + index.html」—— 否则 style.css 的注释和本文件的代码字符串
 // 会被当成候选类，凭空生成约 20% 的无用 CSS。理由与纪律见 ui-classes.ts 头部。
-import { CTX_ITEM, NOTE, ROW, ROW_ACTIVE, ROW_IDX, ROW_META, ROW_NAME, ROW_SUB } from "./ui-classes";
+import {
+  CTX_ITEM,
+  NOTE,
+  ROW,
+  ROW_ACTIVE,
+  ROW_CURRENT,
+  ROW_IDX,
+  ROW_META,
+  ROW_NAME,
+  ROW_SUB,
+} from "./ui-classes";
+// `/` 指令表。它不反向 import 本文件（能力靠 buildCommands 注入），所以这里只拿
+// 类型与工厂函数 —— 依赖方向是单向的。
+import {
+  buildCommands,
+  filterCommands,
+  filterOptions,
+  type Command,
+  type CommandOption,
+} from "./commands";
 
 // 检索匹配深模块：index 重建拼音索引、search 排序返回。分层/同音抑制全藏其内部。
 const matcher = new AppMatcher();
@@ -193,6 +212,9 @@ win.onFocusChanged(({ payload: focused }) => {
 const list = document.getElementById("results") as HTMLUListElement;
 const ctxMenu = document.getElementById("ctxmenu") as HTMLDivElement;
 const hintRecent = document.getElementById("hint-recent") as HTMLElement;
+const hintCmd = document.getElementById("hint-cmd") as HTMLElement;
+const hintAdmin = document.getElementById("hint-admin") as HTMLElement;
+const enterLabel = document.getElementById("enter-label") as HTMLElement;
 const footer = document.getElementById("footer") as HTMLElement;
 const escLabel = document.getElementById("esc-label") as HTMLElement;
 
@@ -203,6 +225,35 @@ let selected = 0;
 // 空态是否展开了「常用」列表（仅 ↓ 可展开）。空态默认只是一个输入框 —— 唤起零成本、
 // 不拉图标；常用列表只在用户主动按 ↓ 时才出现。任何输入 / 收起 / 唤起都会复位。
 let browsing = false;
+
+// ---------------------------------------------------------------------------
+// `/` 指令模式（2026-09-27）
+//
+// 输入以 `/` 开头就不再是搜应用，而是搜指令。与"空态常用列表"是并列的另一种视图，
+// 但两者共用同一个输入框与同一套键盘导航 —— 见下面的 rowCount / activate。
+// 视图共三种：应用候选 / 指令列表 / 某条指令的二级选项。
+// ---------------------------------------------------------------------------
+/** 指令表。能力在这里注入（commands.ts 不反向 import 本文件）。闭包是延迟求值，
+ *  所以引用下面才声明的 themePref 没有初始化顺序问题。 */
+const commands: Command[] = buildCommands({
+  currentTheme: () => themePref,
+  setTheme: (theme) => void applyThemeChange(theme),
+  openSettings: () => invoke("open_settings").catch((e) => console.error(e)),
+});
+/** 已进入二级的指令；null = 停在指令列表（或根本不在指令模式）。 */
+let activeCmd: Command | null = null;
+/** 当前可见的指令行 / 选项行。与 `filtered` 同级，各管一种视图。 */
+let cmdRows: Command[] = [];
+let optRows: CommandOption[] = [];
+/**
+ * 导航层：当前视图的可见行数，以及"第 i 行被选中时该做什么"。
+ *
+ * 三种视图各自在 render 里装配这两个东西，键盘处理只认它们 —— 于是 ↑↓ / 回车 /
+ * Alt+序号 不必为指令模式写第二套分支。指令与选项也有序号，Alt+2 跳过一条指令
+ * 和跳过一条候选是同一个手势。
+ */
+let rowCount = 0;
+let activate: (index: number, admin: boolean) => void = () => {};
 
 // 窗口自适配常量：单条候选行高（与 index.html 的 --row-h 同步）、空查询窗口高、
 // 结果列表上边距。
@@ -222,6 +273,41 @@ const ROW_H = 38;
 const CHROME = 94;
 const GAP = 8;
 let maxRows = 6; // 候选最大行数，来自 settings.json 的 resultRows，热更新
+
+/// 把一份后端配置应用到界面。两条路径共用：`settings-changed` 事件，以及指令写回
+/// （后者拿不到事件 —— 见 applyThemeChange）。
+function applyConfig(cfg: Settings) {
+  applyFont(cfg.font);
+  applyThemeInputs(parseThemePref(cfg.theme), cfg.colors);
+  if (typeof cfg.resultRows === "number" && cfg.resultRows > 0) {
+    const next = Math.floor(cfg.resultRows);
+    if (next !== maxRows) {
+      maxRows = next;
+      render(); // 行数变化，重新 fit 窗口
+    }
+  }
+}
+
+/**
+ * 指令（`/light` `/dark` `/auto`，以及 `/theme` 的二级选项）唯一的主题出口：
+ * 写盘 + 立即生效。
+ *
+ * ⚠️ 必须用 command 的返回值自己 apply，**不能**等 `settings-changed`：后端
+ * `patch_settings` 会把这次写入记成 own_write，watcher 因此跳过通知 —— 那是防
+ * "写→读→写"回环的设计，代价就是"自己改的东西自己负责应用"。等事件等于界面不动。
+ *
+ * 失败只记日志：指令是"随手试一下"的场景，弹错误反而打断。
+ */
+async function applyThemeChange(theme: string) {
+  try {
+    applyConfig(await invoke<Settings>("set_theme", { theme }));
+    // 二级列表要重绘，才能把「当前」标记挪到新值上（applyConfig 只在行数变化时自己
+    // render）。直接执行型（`/light`）不在此列：那时 activeCmd 为空，列表该留在原地。
+    if (activeCmd) render();
+  } catch (e) {
+    console.error(e);
+  }
+}
 
 // Cached icon data URI per launch path, or `null` once we've given up on a row.
 // `iconTries` caps the retry budget so a transient extraction failure (e.g. the
@@ -329,6 +415,8 @@ function resetForNextWake() {
   input.value = "";
   selected = 0;
   browsing = false;
+  // 指令模式也要复位：否则下次唤起会直接落在上次那条指令的二级选项里。
+  activeCmd = null;
   render();
 }
 
@@ -371,116 +459,256 @@ function closeContextMenu() {
   ctxMenu.textContent = "";
 }
 
+/**
+ * 重建整个列表 —— 三种视图共用这一个入口：
+ *   应用候选（有查询 / 空态常用）· 指令列表（输入 `/`）· 二级选项（`/theme` 之后）
+ *
+ * 分派只做一次判断（输入是不是以 `/` 开头），之后各自装配 rowCount / activate；
+ * 收尾部分（滚动、窗口高度、提示栏）完全共用。
+ */
 function render() {
-  // filtered 必须等于"当前可见的列表"，键盘操作（回车 / Alt+数字 / 方向键）全基于它，
-  // 这样空态未展开时不会盲启动一条看不见的候选。三态：
-  //   有查询   -> 搜索结果
-  //   空态展开 -> 常用列表（↓ 触发）
-  //   空态收起 -> 空（默认；唤起时只是一个输入框）
-  const query = input.value.trim();
-  // 截断到 resultRows：窗口只装得下这么多行，navigation 就只该在这些行里走。
-  // 排序的 tier 保证"打够了它就在前面"（精确/前缀命中置顶），所以截断藏掉的只是模糊
-  // 匹配的尾巴——那正是该继续打字、而不是往下滚的场景。顺带让 Alt+序号、图标加载
-  // （loadMissingIcons 只吃可见行）和可见范围三者的边界完全一致。
-  filtered = query
-    ? matcher.search(input.value).slice(0, maxRows)
-    : browsing
-      ? matcher.frequent(maxRows)
-      : [];
-  if (selected >= filtered.length) selected = Math.max(0, filtered.length - 1);
+  const raw = input.value;
+  // 输入以 `/` 开头 = 指令模式。`/` 之后的内容既筛指令名，也筛二级选项。
+  const slash = raw.startsWith("/") ? raw.slice(1) : null;
+
+  // 二级视图只在"输入仍以该指令名为前缀"时成立。用户把 `/theme` 改成 `/light` 的
+  // 过程中会自动退回一级 —— 否则会停在一个永远筛不出东西的选项列表里。
+  // （`/theme` → `/themel` 仍算前缀命中，所以"继续打字筛选项"不会被误判成退出。）
+  if (activeCmd && (slash === null || !slash.startsWith(activeCmd.name))) activeCmd = null;
 
   list.textContent = "";
-  filtered.forEach((a, i) => {
-    const li = document.createElement("li");
-    // 行的类配方在 ui-classes.ts（Step 3b'）。几何与状态留在 style.css 的 #results li：
-    // 那里的 height/margin 直接参与上面的 ROW_H 算式；而 :hover / .active 带 #results
-    // ID 作用域，特异性 (1,1,1) 压得住 (0,1,0) 的原子类 —— 所以"选中态压得住悬停态"
-    // 不依赖 Tailwind 的输出排序。
-    li.className = i === selected ? `${ROW} ${ROW_ACTIVE}` : ROW;
 
-    // 序号：与 Alt+数字 直接对应（1..9，0 = 第 10 项）。超出十项仍按真实序号显示，
-    // 只是没有对应的单键可敲。
-    const idx = document.createElement("span");
-    idx.className = ROW_IDX;
-    idx.textContent = String(i + 1);
-    li.appendChild(idx);
+  let showList: boolean;
+  let rows: number;
+  let noHits = false;
 
-    li.appendChild(avatarEl(a));
-
-    const meta = document.createElement("div");
-    meta.className = ROW_META;
-    const nameEl = document.createElement("span");
-    nameEl.className = ROW_NAME;
-    nameEl.textContent = a.name;
-    meta.appendChild(nameEl);
-    const sub = subtitle(a);
-    if (sub) {
-      const c = document.createElement("span");
-      c.className = ROW_SUB;
-      c.textContent = sub;
-      meta.appendChild(c);
+  if (slash !== null) {
+    filtered = []; // 指令视图里没有应用候选，别让上一轮的结果留在导航层
+    showList = true;
+    rows = renderSlashView(slash);
+    noHits = rowCount === 0;
+  } else {
+    // filtered 必须等于"当前可见的列表"，这样空态未展开时不会盲启动一条看不见的候选。
+    // 三态：有查询 -> 搜索结果；空态展开 -> 常用列表（↓ 触发）；空态收起 -> 空。
+    const query = raw.trim();
+    // 截断到 resultRows：窗口只装得下这么多行，navigation 就只该在这些行里走。
+    // 排序的 tier 保证"打够了它就在前面"（精确/前缀命中置顶），所以截断藏掉的只是模糊
+    // 匹配的尾巴——那正是该继续打字、而不是往下滚的场景。顺带让 Alt+序号、图标加载
+    // （loadMissingIcons 只吃可见行）和可见范围三者的边界完全一致。
+    filtered = query
+      ? matcher.search(raw).slice(0, maxRows)
+      : browsing
+        ? matcher.frequent(maxRows)
+        : [];
+    // selected 可能是 -1（刚从"指令一览"态退出来）—— 一并归位到有效范围。
+    if (selected < 0 || selected >= filtered.length) {
+      selected = Math.max(0, filtered.length - 1);
     }
-    li.appendChild(meta);
+    filtered.forEach((a, i) => list.appendChild(appRow(a, i)));
 
-    // 点击即启动（此前只选中）。悬停同步选中态见下方 list 上的 mousemove。
-    li.addEventListener("click", () => launch(a));
-    // 右键：屏蔽 webview 自带菜单，换成只含两项的自绘菜单。
-    li.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      setActive(i);
-      openContextMenu(a, e.clientX, e.clientY);
-    });
-
-    list.appendChild(li);
-  });
-
-  const active = list.querySelector("li.active") as HTMLElement | null;
-  active?.scrollIntoView({ block: "nearest" });
-
-  loadMissingIcons(filtered);
-
-  // 窗口高度自适应：列表可见 = 输入行 + 可见候选行数；否则只显示输入行（空态）。
-  // showList 与上方 filtered 同源：能看见的才可导航，二者必须一致。
-  const showList = query.length > 0 || browsing;
-  list.style.display = showList ? "block" : "none";
-
-  // 列表展开了却一条候选都没有（查询无命中）。此时窗口会留一条空白，而 footer 那几条
-  // 键位提示（↑↓ / ↵ / Ctrl+↵ / Alt+序号）全是失效的 —— 放一行提示占住位置，并让
-  // footer 收起那组提示。提示行的高度就是一条候选（--row-h − 2px + 2px margin），
-  // 所以下面的 rows 取 max(…, 1) 之后，CHROME 算式一个字都不用动。
-  const noHits = showList && filtered.length === 0;
-  if (noHits) {
-    const note = document.createElement("li");
-    note.className = NOTE;
+    // showList 与 filtered 同源：能看见的才可导航，二者必须一致。
+    showList = query.length > 0 || browsing;
+    // 列表展开了却一条候选都没有（查询无命中）。此时窗口会留一条空白，而 footer 那几条
+    // 键位提示全是失效的 —— 放一行提示占住位置，并让 footer 收起那组提示。提示行的高度
+    // 就是一条候选，所以下面的 rows 取 max(…, 1) 之后，CHROME 算式一个字都不用动。
+    noHits = showList && filtered.length === 0;
     // browsing 时走到这里只可能是索引为空（frequent 是 ranked 切片，有条目就不会空）。
-    note.textContent = query ? "无匹配" : "暂无条目";
-    list.appendChild(note);
+    if (noHits) list.appendChild(noteRow(query ? "无匹配" : "暂无条目"));
+    rows = showList ? Math.max(filtered.length, 1) : 0;
+
+    rowCount = filtered.length;
+    activate = (i, admin) => {
+      const a = filtered[i];
+      if (a) launch(a, admin);
+    };
+
+    loadMissingIcons(filtered);
   }
 
-  // filtered 上方已截断到 maxRows，可见行数就是它自身；无命中时那行提示正好占一行。
-  const rows = showList ? Math.max(filtered.length, 1) : 0;
+  list.style.display = showList ? "block" : "none";
+  (list.querySelector("li.active") as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
+
+  // 窗口高度自适应：列表可见 = 输入行 + 可见行数；否则只显示输入行（空态）。
+  // 三种视图共用这一条算式 —— 指令行与选项行的行高就是候选行的行高（都走 #results li
+  // 的 height/margin），所以 CHROME 一个字都不用改。
   // 每次都 setSize（不缓存）：show 会按 config 尺寸重置窗口，每次 render 强制贴回内容高度。
   const height = CHROME + (showList ? GAP + rows * ROW_H : 0);
   win.setSize(new LogicalSize(640, height)).catch(() => {});
 
-  // 提示栏随状态切换：空态收起 = 「↓ 常用 / Esc 隐藏」；列表可见 = 「↑↓ 选择 / ↵ 启动 …」；
-  // 无命中 = 只剩 Esc（其余键都不成立）。
-  // 空态下那些键（除 ↓ 展开外）都不生效，显示出来只会误导。
+  // 提示栏随状态切换：空态 = 「↓ 常用 / / 指令 / Esc 隐藏」；列表可见 = 「↑↓ 选择 …」；
+  // 无命中 = 只剩 Esc（其余键都不成立）。空态下那些键都不生效，显示出来只会误导。
+  // 指令视图另有一套文案：那里 Ctrl+↵ 与 Alt+序号 不成立（指令没有"以管理员身份运行"
+  // 这回事），Esc 的含义也从"收起"变成"返回"。
+  const inSlash = slash !== null;
   hintRecent.hidden = showList;
+  hintCmd.hidden = showList;
+  hintAdmin.hidden = inSlash;
+  enterLabel.textContent = inSlash ? (activeCmd ? "应用" : "确认") : "启动";
   footer.classList.toggle("empty", !showList);
   footer.classList.toggle("no-hits", noHits);
-  // Esc 的含义分两级：展开态先收起常用列表，其余情况直接隐藏窗口。
-  escLabel.textContent = browsing ? "收起" : "隐藏";
+  // Esc 分三级：二级视图先返回指令列表，指令列表 / 常用列表再收起，其余直接隐藏窗口。
+  escLabel.textContent = activeCmd ? "返回" : browsing || inSlash ? "收起" : "隐藏";
+}
+
+/**
+ * 渲染 `/` 视图，返回"窗口要装的行数"。
+ *
+ * 一级（指令列表）与二级（某条指令的选项）在这里分派 —— 它们共用同一个输入框，
+ * 差别只是拿什么当数据源。无命中时也占一行（提示行），与搜索视图同手法，
+ * 所以高度算式不必为它开特例。
+ */
+function renderSlashView(query: string): number {
+  const cmd = activeCmd;
+  if (cmd) {
+    // 输入框此刻是 `/theme …`：**减掉指令名**，剩下的才是选项查询。
+    // （`/theme` → 空 → 列全部；`/themel` → "l" → 只剩 light。忘了减就会拿 "theme"
+    // 去匹配 auto/light/dark，结果永远是"无匹配"。）
+    optRows = filterOptions(cmd.options ?? [], query.slice(cmd.name.length));
+    cmdRows = [];
+    optRows.forEach((o, i) => list.appendChild(optionRow(cmd, o, i)));
+    rowCount = optRows.length;
+    activate = (i) => {
+      const o = optRows[i];
+      if (o) cmd.apply?.(o.value);
+    };
+    if (rowCount === 0) list.appendChild(noteRow("无匹配"));
+    return Math.max(rowCount, 1);
+  }
+
+  cmdRows = filterCommands(commands, query).slice(0, maxRows);
+  optRows = [];
+  // 输入恰好是一个 `/` 时，列表只是"指令一览"：**不预选中任何行**，回车因此不会误触发
+  // 第一条（多半是 /theme，白切一次主题）。按 ↑↓ 或悬停即正常选中 —— 选中态由用户建立。
+  // 打了字（`/t`）说明意图明确，回到常规的"默认选第一条"。
+  // ⚠️ 防误触靠"不预选中"，不能靠"拦回车"：拦了会把"↑↓ 选中后回车"一起挡掉。
+  selected = query === "" ? -1 : Math.max(0, selected);
+  cmdRows.forEach((c, i) => list.appendChild(commandRow(c, i)));
+  rowCount = cmdRows.length;
+  activate = (i) => {
+    const c = cmdRows[i];
+    if (!c) return;
+    if (c.options?.length) {
+      // 进二级：把输入框规范化成 `/name` —— "继续打字"就是在筛选项，render 顶部的退出
+      // 判断也依赖这个前缀（用户当初可能只打了 `/t` 就回车）。
+      activeCmd = c;
+      input.value = `/${c.name}`;
+      selected = 0;
+      render();
+    } else {
+      c.run?.();
+    }
+  };
+  if (rowCount === 0) list.appendChild(noteRow("无此指令"));
+  return Math.max(rowCount, 1);
+}
+
+/**
+ * 构造一行可见项的外壳：序号 + 图标位 + 「名称 / 副标题」两行。
+ *
+ * 应用候选、指令、二级选项三种行共用它 —— 它们必须同高，因为行高直接参与
+ * `rows * ROW_H` 算式（这正是指令列表不必改 CHROME 的原因）。序号位与 Alt+数字的
+ * 对应关系对三种行都成立。
+ *
+ * 行的类配方在 ui-classes.ts；几何与状态留在 style.css 的 `#results li` —— 那里的
+ * height/margin 参与 ROW_H 算式，而 :hover / .active 带 #results ID 作用域，特异性
+ * (1,1,1) 压得住 (0,1,0) 的原子类，所以"选中态压得住悬停态"不依赖 Tailwind 的输出
+ * 排序。`subClass` 只有"当前生效"的选项行需要换（换成强调色那一档）。
+ */
+function rowShell(
+  i: number,
+  avatar: HTMLElement,
+  name: string,
+  sub: string | null,
+  subClass: string = ROW_SUB,
+): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = i === selected ? `${ROW} ${ROW_ACTIVE}` : ROW;
+
+  // 序号：与 Alt+数字 直接对应（1..9，0 = 第 10 项）。超出十项仍按真实序号显示，
+  // 只是没有对应的单键可敲。
+  const idx = document.createElement("span");
+  idx.className = ROW_IDX;
+  idx.textContent = String(i + 1);
+  li.appendChild(idx);
+
+  li.appendChild(avatar);
+
+  const meta = document.createElement("div");
+  meta.className = ROW_META;
+  const nameEl = document.createElement("span");
+  nameEl.className = ROW_NAME;
+  nameEl.textContent = name;
+  meta.appendChild(nameEl);
+  if (sub) {
+    const c = document.createElement("span");
+    c.className = subClass;
+    c.textContent = sub;
+    meta.appendChild(c);
+  }
+  li.appendChild(meta);
+  return li;
+}
+
+/** 一条应用候选行：点击启动，右键弹自绘菜单（只有应用有"位置"和"提权"可言）。 */
+function appRow(a: AppInfo, i: number): HTMLLIElement {
+  const li = rowShell(i, avatarEl(a), a.name, subtitle(a));
+  // 点击即启动（此前只选中）。悬停同步选中态见 list 上的 mousemove。
+  li.addEventListener("click", () => launch(a));
+  // 右键：屏蔽 webview 自带菜单，换成只含两项的自绘菜单。
+  li.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    setActive(i);
+    openContextMenu(a, e.clientX, e.clientY);
+  });
+  return li;
+}
+
+/**
+ * 一条指令行。刻意不挂右键菜单 —— 菜单那两项（提权运行 / 打开所在位置）对指令都不
+ * 成立，弹一个点了没反应的菜单不如不弹（与系统项、商店应用同一判断）。
+ */
+function commandRow(c: Command, i: number): HTMLLIElement {
+  const li = rowShell(i, emojiAvatar(c.emoji), `/${c.name}`, c.hint);
+  li.addEventListener("click", () => activate(i, false));
+  return li;
+}
+
+/**
+ * 一条二级选项行。当前生效的那项换成强调色副标题，并把「当前」写在最前面 ——
+ * "选完生效"必须有这个反馈，否则用户不知道现在生效的是哪一项。
+ */
+function optionRow(cmd: Command, o: CommandOption, i: number): HTMLLIElement {
+  const current = cmd.current?.() === o.value;
+  const li = rowShell(
+    i,
+    emojiAvatar(cmd.emoji),
+    o.value,
+    current ? `当前 · ${o.hint}` : o.hint,
+    current ? ROW_CURRENT : ROW_SUB,
+  );
+  li.addEventListener("click", () => activate(i, false));
+  return li;
+}
+
+/** 无命中 / 无此指令时占一行位置的说明。排版与颜色见 ui-classes.ts 的 NOTE。 */
+function noteRow(text: string): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = NOTE;
+  li.textContent = text;
+  return li;
+}
+
+/** 彩色 emoji 头像（系统项与指令行共用）：不描边、也不参与图标提取。 */
+function emojiAvatar(emoji: string): HTMLElement {
+  const av = document.createElement("div");
+  av.className = "avatar emoji";
+  av.textContent = emoji;
+  return av;
 }
 
 function avatarEl(a: AppInfo): HTMLElement {
   const emoji = systemEmoji(a.launchPath);
-  if (emoji) {
-    const av = document.createElement("div");
-    av.className = "avatar emoji";
-    av.textContent = emoji;
-    return av;
-  }
+  if (emoji) return emojiAvatar(emoji);
   if (a.icon) {
     const img = document.createElement("img");
     img.src = a.icon;
@@ -594,45 +822,61 @@ document.addEventListener(
   (e) => {
     if (e.isComposing) return;
 
-    // Alt + 序号 直接启动（0 = 第 10 项）。裸数字键必须留给搜索框 —— "7-Zip"、
-    // "360" 这类名字本身就带数字，所以用 Alt 修饰而不是直接吃数字键。
+    // Alt + 序号：直接执行第 N 行（0 = 第 10 项）。三种视图通用 —— 指令与选项也有序号，
+    // "Alt+2 跳过前一条"是同一个手势。裸数字键必须留给搜索框（"7-Zip"、"360" 这类名字
+    // 本身就带数字），所以用 Alt 修饰而不是直接吃数字键。
     if (e.altKey && !e.ctrlKey && !e.metaKey && /^[0-9]$/.test(e.key)) {
       e.preventDefault();
-      const pick = filtered[e.key === "0" ? 9 : Number(e.key) - 1];
-      if (pick) launch(pick);
+      const i = e.key === "0" ? 9 : Number(e.key) - 1;
+      if (i < rowCount) activate(i, false);
       return;
     }
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      if (!filtered.length && !input.value.trim()) {
+      if (!rowCount && !input.value.trim()) {
         // 空态未展开时，↓ 的第一次按下 = 展开「常用」并选中第 1 项。这就是"向下进入
         // 列表"这一个手势的自然延伸，不引入新键位（Tab 会让入口键与导航键分家）。
         browsing = true;
         selected = 0;
         render(); // 列表从无到有、窗口还要长高 —— 这一步必须整表重建
-      } else if (filtered.length) {
+      } else if (rowCount) {
         // 仅在已有列表内移动高亮时走 setActive，不要 render：整表重建会把光标下的
         // 那一行销毁再插入，指针未动却让浏览器补发 mouseenter → setActive 把选中态
         // 弹回原处（表现为"鼠标悬停在列表上时方向键失灵"）。顺带省一轮图标加载。
-        setActive((selected + 1) % filtered.length);
+        setActive((selected + 1) % rowCount);
       }
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      if (filtered.length) setActive((selected - 1 + filtered.length) % filtered.length);
+      if (rowCount) setActive((selected - 1 + rowCount) % rowCount);
     } else if (e.key === "Enter") {
-      const pick = filtered[selected];
+      // 没有选中行时（指令一览态 selected = -1、或列表为空）activate 自己会忽略 ——
+      // 防误触交给"不预选中"，这里不再拦回车（拦了会把"↑↓ 选中后回车"一起挡掉）。
       // Ctrl(+Shift)+回车 = 以管理员身份运行（Windows 惯例是 Ctrl+Shift+Enter）。
-      if (pick) launch(pick, e.ctrlKey || e.metaKey);
+      // 对指令与选项无意义，activate 的实现忽略这个参数。
+      activate(selected, e.ctrlKey || e.metaKey);
     } else if (e.key === "Escape") {
       e.preventDefault();
-      // 分级退出：先关右键菜单，再收起常用列表，最后才隐藏窗口。
+      // 分级退出：关右键菜单 → 二级返回指令列表 → 收起列表（常用 / 指令）→ 隐藏窗口。
       if (!ctxMenu.hidden) {
         closeContextMenu();
         return;
       }
+      if (activeCmd) {
+        activeCmd = null;
+        selected = 0;
+        render();
+        return;
+      }
       if (browsing) {
         browsing = false;
+        selected = 0;
+        render();
+        return;
+      }
+      if (input.value.startsWith("/")) {
+        // 指令模式：先清掉 `/` 回到空态（与"收起常用"同级），再按一次才隐藏窗口。
+        input.value = "";
         selected = 0;
         render();
         return;
@@ -666,15 +910,9 @@ void win.onThemeChanged(({ payload }) => {
   if (themePref === "auto") applyTheme();
 });
 
-// Hot-apply a font change the user made in settings.json (backend watches it).
-win.listen<Settings>("settings-changed", (e) => {
-  applyFont(e.payload.font);
-  applyThemeInputs(parseThemePref(e.payload.theme), e.payload.colors);
-  if (typeof e.payload.resultRows === "number" && e.payload.resultRows > 0) {
-    maxRows = Math.floor(e.payload.resultRows);
-    render(); // 行数变化，重新 fit 窗口
-  }
-});
+// Hot-apply a settings.json change the user made by hand (backend watches it).
+// 指令写回走的是另一条路（applyThemeChange），拿不到这个事件 —— 理由见那里的注释。
+win.listen<Settings>("settings-changed", (e) => applyConfig(e.payload));
 
 input.addEventListener("focus", render);
 
