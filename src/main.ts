@@ -336,6 +336,10 @@ async function loadApps(force = false) {
     const cached = iconCache.get(a.launchPath);
     return cached !== undefined ? { ...a, icon: cached } : a;
   });
+  // 后端随索引下发的图标（磁盘缓存命中，见 src-tauri/src/icon_cache.rs）在首帧
+  // 就已经在位上，没有"字母头像 → 图标"的硬切换需要遮 —— 直接登记成已呈现，
+  // 否则每次冷启动都会白播一次淡入，反而像慢了半拍。
+  for (const a of apps) if (a.icon) iconRevealed.add(a.launchPath);
   matcher.index(apps);
   // 权重先就位再渲染：否则首屏会用"无权重"的顺序画一次、再跳成带权重的，闪一下。
   await refreshUsage();
@@ -735,6 +739,8 @@ function avatarEl(a: AppInfo): HTMLElement {
 async function loadMissingIcons(apps: AppInfo[]) {
   const pending = apps.filter(
     (a) =>
+      // 后端已经随索引给了图标（磁盘缓存命中）→ 不必再问一次。
+      !a.icon &&
       !isSystemUri(a.launchPath) && // 系统项用 emoji，不为它们提取图标（省一次 IPC）
       !iconCache.has(a.launchPath) &&
       !iconFetching.has(a.launchPath) &&

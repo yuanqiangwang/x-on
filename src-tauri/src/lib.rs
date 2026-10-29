@@ -1,15 +1,17 @@
 mod commands;
+mod icon_cache;
 mod icons;
 mod portable;
 mod store;
 mod system;
 mod usage;
 
+use icon_cache::IconCache;
 use portable::{file_stem, launch_portable, load_manifest, parse_portable, save_manifest, PortableEntry};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -78,14 +80,6 @@ impl Index {
 /// `set_menu` instead of building a second icon.
 #[derive(Default)]
 struct TrayHandle(Mutex<Option<TrayIcon<tauri::Wry>>>);
-
-/// Cache of extracted app icons, keyed by launch path. Extraction is expensive
-/// (shell + GDI + PNG + base64), so we keep results — including misses — in
-/// memory to avoid re-extracting on every keystroke.
-#[derive(Clone, Default)]
-struct IconCache {
-    map: Arc<Mutex<HashMap<String, Option<String>>>>,
-}
 
 /// Tracks the last settings.json text this process wrote itself, so the file
 /// watcher can skip the notification caused by our own write (avoiding a
@@ -663,6 +657,13 @@ fn build_index(app: &AppHandle) -> Vec<AppInfo> {
     // 未命中才追加新条目。顺序反了会退化成"每条命令都多一行"。见 commands.rs。
     crate::commands::apply_commands(&mut apps);
 
+    // 图标：磁盘缓存里仍然新鲜的那部分直接挂到行上，随 `scan_apps` 一起下发 ——
+    // 前端首帧渲染就有图标，不必等一次 IPC + 回包后的整表重绘。没命中的保持 `None`，
+    // 仍走 `get_app_icons` 的异步提取（首次运行、新装应用、图标刚变过）。
+    if let Some(cache) = app.try_state::<IconCache>() {
+        cache.attach(app, &mut apps);
+    }
+
     apps
 }
 
@@ -781,11 +782,17 @@ fn register_shortcut(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> 
 fn build_tray(app: &tauri::App) -> tauri::Result<TrayIcon<tauri::Wry>> {
     let menu = build_tray_menu(app.handle())?;
 
+    // Windows 的托盘默认**不带**悬停提示（`NOTIFYICONDATA.szTip` 留空就什么都不显示），
+    // 所以鼠标停上去只有一个孤零零的图标，和别的应用不一样。带上当前快捷键：悬停即可
+    // 想起怎么唤起，比只写名字有用。accelerator 改后需重启才生效，与它在这里的取值时机一致。
+    let tooltip = format!("xon — {}", load_config(app.handle()).accelerator);
+
     let mut tray = TrayIconBuilder::new();
     if let Some(icon) = app.default_window_icon().cloned() {
         tray = tray.icon(icon);
     }
     let built = tray
+        .tooltip(tooltip)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
@@ -798,6 +805,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<TrayIcon<tauri::Wry>> {
                     std::thread::spawn(move || rebuild_index(&handle));
                 }
                 "clear-usage" => clear_usage(app),
+                "clear-icons" => clear_icon_cache(app),
                 "about" => show_about(app),
                 "quit" => app.exit(0),
                 _ => {
@@ -878,6 +886,9 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     // 使用记录的复位出口（ADR 0002 第 6 条）。
     let clear_usage_item =
         MenuItem::with_id(app, "clear-usage", "清空使用记录", true, None::<&str>)?;
+    // 图标缓存的手动失效出口，见 icon_cache.rs 顶部关于失效判据的取舍。
+    let clear_icons_item =
+        MenuItem::with_id(app, "clear-icons", "清除图标缓存", true, None::<&str>)?;
     let about = MenuItem::with_id(app, "about", "关于 xon", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     // 分隔线：把「关于 / 退出」与前几个索引操作分开（Windows 惯例）。
@@ -904,6 +915,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         &open_config_item,
         &rescan,
         &clear_usage_item,
+        &clear_icons_item,
         &separator,
         &about,
         &quit,
@@ -1080,6 +1092,22 @@ fn clear_usage(app: &AppHandle) {
     if let Err(e) = usage::clear_usage(app) {
         eprintln!("clear usage failed: {e}");
     }
+}
+
+/// Tray action: 清掉图标磁盘缓存并重建索引。
+///
+/// 兜底出口。`icon_cache` 的失效判据只看 `launchPath` 的 mtime + size，所以
+/// 「exe 原地升级、`.lnk` 不动」时图标会陈旧 —— 那种情况没有可靠的自动判据（要拿
+/// target 的 stat 就得让索引构建和 IPC 两侧算出完全一致的指纹，代价见模块注释）。
+///
+/// 必须跟着 `rebuild_index`：当前 `Index` 快照里的行已经带着旧图标，只清缓存文件
+/// 前端是看不到变化的。
+fn clear_icon_cache(app: &AppHandle) {
+    if let Some(cache) = app.try_state::<IconCache>() {
+        cache.clear(app);
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || rebuild_index(&handle));
 }
 
 /// Read settings.json and forward the fresh config to the frontend — unless it is
@@ -1491,40 +1519,49 @@ fn reveal_in_explorer(path: String) -> Result<(), String> {
 
 /// Batch-fetch app icons for a set of launch paths, as base64 PNG data URIs.
 ///
-/// One IPC round-trip per render instead of one per row, with a shared in-memory
-/// cache so repeated keystrokes don't re-extract icons. Extraction is done on a
+/// Two-tier: the in-memory map answers repeats within one process, the on-disk
+/// cache (`icon_cache`) answers repeats across restarts. Only a true miss —
+/// first run, a newly installed app, or an entry whose source file changed —
+/// actually pays for shell + GDI + PNG + base64.
+///
+/// One IPC round-trip per render instead of one per row. Extraction runs on a
 /// blocking thread so the UI thread stays responsive.
 #[tauri::command]
 async fn get_app_icons(
+    app: AppHandle,
     state: State<'_, IconCache>,
     paths: Vec<String>,
 ) -> Result<HashMap<String, Option<String>>, String> {
-    let cache = state.map.clone();
+    let cache = state.inner().clone();
+    cache.ensure_loaded(&app);
 
-    // Split into cache hits (fast, sync) and misses (extract off-thread).
-    let mut out: HashMap<String, Option<String>> = HashMap::new();
-    let mut missing: Vec<String> = Vec::new();
-    {
-        let guard = cache.lock().unwrap();
-        for p in &paths {
-            if let Some(v) = guard.get(p) {
-                out.insert(p.clone(), v.clone());
-            } else {
-                missing.push(p.clone());
-            }
-        }
-    }
+    // Split into cache hits (fast, sync) and misses (resolve off-thread).
+    let (mut out, missing) = cache.memory_hits(&paths);
 
     if !missing.is_empty() {
+        let handle = app.clone();
         let fresh = tauri::async_runtime::spawn_blocking(move || {
             let mut got: HashMap<String, Option<String>> = HashMap::new();
-            for p in &missing {
-                // Only successes get cached. A miss stays uncached so the frontend's
-                // retry budget can re-extract once the shell icon cache has warmed —
-                // caching a permanent None here would defeat that retry.
+
+            // 第二跳：磁盘。冷启动时几乎全在这里命中 —— 这才是「重启后第一次也
+            // 有图标」的收益点；`build_index` 的 `attach` 通常已经抢先填过一遍，
+            // 走到这里说明那是索引构建之后才出现的新条目。
+            let mut extract: Vec<String> = Vec::new();
+            for p in missing {
+                match cache.lookup_disk(&p) {
+                    Some(uri) => {
+                        got.insert(p, Some(uri));
+                    }
+                    None => extract.push(p),
+                }
+            }
+
+            // 第三跳：真的去提取。只有成功才进缓存 —— 失败留给前端的重试预算，
+            // 见 `MAX_ICON_TRIES`。
+            for p in &extract {
+                // `store:` entries have no file: resolve the AUMID to a Shell
+                // PIDL first (see store.rs), then reuse the PNG pipeline.
                 let res = if store::is_store_launch_path(p) {
-                    // `store:` entries have no file: resolve the AUMID to a Shell
-                    // PIDL first (see store.rs), then reuse the PNG pipeline.
                     store::icon_data_uri(store::strip_launch_prefix(p))
                 } else {
                     icons::icon_data_uri(p)
@@ -1533,11 +1570,9 @@ async fn get_app_icons(
                     got.insert(p.clone(), v);
                 }
             }
-            if let Ok(mut guard) = cache.lock() {
-                for (k, v) in &got {
-                    guard.insert(k.clone(), v.clone());
-                }
-            }
+
+            cache.remember(&got);
+            cache.flush(&handle);
             got
         })
         .await
