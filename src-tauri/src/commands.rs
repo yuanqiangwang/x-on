@@ -100,7 +100,21 @@ pub const COMMANDS: &[CommandDef] = &[
 /// 结果行的副标题上。
 const COMMENT: &str = "系统命令";
 
-/// 把命令清单并入索引：已存在同名条目则补别名，否则解析 PATH 后新增。
+/// 中英文名不一致的**同一程序**：命令表里的名字 → 索引里可能已经存在的名字（可多个，
+/// 按本机语言/来源不同而不同）。
+///
+/// 命中就把命令的别名补到那一行上，**不新增行**。起因是「Windows 终端」：商店数据源
+/// 已经枚举出这一项，但它的显示名是**「终端」**（`Get-StartApps` 实测；英文系统上是
+/// "Terminal"），命令表按中文全名找不到它，于是多出一行 `wt.exe`。多出来的那行不只是
+/// 冗余 —— `wt.exe` 是 App Execution Alias（0 字节重解析点），`SHGetFileInfoW` 对它
+/// 解析不出包内图标，只能给一个通用窗口图标，看起来就像「没有图标」。合并后保住的是
+/// 商店那行的真图标和 AUMID 激活方式。
+const MERGE_ALIASES: &[(&str, &[&str])] = &[(
+    "Windows 终端",
+    &["终端", "Windows Terminal", "Terminal"],
+)];
+
+/// 把命令清单并入索引：已存在同名（或等价名）条目则补别名，否则解析 PATH 后新增。
 pub fn apply_commands(apps: &mut Vec<AppInfo>) {
     // 名字 → 下标。取第一个同名条目即可：前四类内部已经各自去重过了。
     let mut by_name: HashMap<String, usize> = HashMap::new();
@@ -111,11 +125,27 @@ pub fn apply_commands(apps: &mut Vec<AppInfo>) {
     for def in COMMANDS {
         let key = index_name_key(def.name);
 
-        // 已有同名条目 → 只补英文别名，不新增行。
-        if let Some(&i) = by_name.get(&key) {
+        // 已有同名条目 → 只补别名，不新增行。等价名（见 MERGE_ALIASES）走同一条路。
+        let target = by_name.get(&key).copied().or_else(|| {
+            MERGE_ALIASES
+                .iter()
+                .find(|(from, _)| index_name_key(from) == key)
+                .and_then(|(_, candidates)| {
+                    candidates
+                        .iter()
+                        .find_map(|n| by_name.get(&index_name_key(n)).copied())
+                })
+        });
+
+        if let Some(i) = target {
             let existing = &mut apps[i];
-            for alias in def.aliases {
-                let s = (*alias).to_string();
+            // 合并时命令自己的名字也要变成别名，否则「Windows 终端」搜不到那一行。
+            let mut extra: Vec<String> = Vec::new();
+            if index_name_key(&existing.name) != key {
+                extra.push(def.name.to_string());
+            }
+            extra.extend(def.aliases.iter().map(|s| s.to_string()));
+            for s in extra {
                 let dup = existing
                     .aliases
                     .iter()
@@ -254,6 +284,51 @@ mod tests {
         assert!(rows[0].launch_path.starts_with("store:"));
     }
 
+    /// 中英文名不一致的同一程序（「Windows 终端」vs 商店的「终端」）必须合并成一行：
+    /// 另起一行只会多出一个 `wt.exe`，而那是 App Execution Alias，拿不到包内图标 ——
+    /// 界面上看起来就是「没有图标」。
+    ///
+    /// 商店那行的显示名本机实测是「终端」（`Get-StartApps`），英文系统上是 "Terminal"，
+    /// 所以 `MERGE_ALIASES` 里要列多个候选，这个测试把三种都过一遍。
+    #[test]
+    fn terminal_merges_into_the_store_row() {
+        for store_name in ["终端", "Terminal", "Windows Terminal"] {
+            let aumid = "store:Microsoft.WindowsTerminal_8wekyb3d8bbwe!App";
+            let mut apps = vec![AppInfo {
+                name: store_name.to_string(),
+                comment: Some("商店应用".to_string()),
+                launch_path: aumid.to_string(),
+                target_path: aumid.to_string(),
+                icon: None,
+                aliases: Vec::new(),
+            }];
+            apply_commands(&mut apps);
+
+            let rows: Vec<_> = apps
+                .iter()
+                .filter(|a| {
+                    let n = index_name_key(&a.name);
+                    n.contains("terminal") || n.contains("终端")
+                })
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "商店名 {store_name} 时不能出现第二行终端，实际命中 {:?}",
+                rows.iter().map(|a| &a.name).collect::<Vec<_>>()
+            );
+            // 保留商店行的启动方式（AUMID 激活比 App Execution Alias 可靠）。
+            assert!(rows[0].launch_path.starts_with("store:"));
+            for want in ["wt", "terminal", "Windows 终端"] {
+                assert!(
+                    rows[0].aliases.iter().any(|a| a == want),
+                    "商店名 {store_name} 合并后应补上别名 {want}，实际 {:?}",
+                    rows[0].aliases
+                );
+            }
+        }
+    }
+
     /// 诊断：清单里哪些名字会被前四类吸收（只补别名），哪些会真的新增一行。
     /// 收录策略的成败全看这个分布——如果高频工具落进了「新增」而它其实已在
     /// 索引里，说明 `name` 与 Windows 的显示名没对齐。
@@ -292,7 +367,16 @@ mod tests {
 
         let (mut aliased, mut added) = (Vec::new(), Vec::new());
         for def in COMMANDS {
-            if existing.contains(&index_name_key(def.name)) {
+            let key = index_name_key(def.name);
+            // 等价名也算「已被吸收」—— 否则「Windows 终端」会一直被报成新增行，
+            // 而实际上它已经并进商店的「终端」那一行了。
+            let merged = MERGE_ALIASES
+                .iter()
+                .find(|(from, _)| index_name_key(from) == key)
+                .is_some_and(|(_, cands)| {
+                    cands.iter().any(|n| existing.contains(&index_name_key(n)))
+                });
+            if existing.contains(&key) || merged {
                 aliased.push(def.name);
             } else {
                 added.push(def.name);

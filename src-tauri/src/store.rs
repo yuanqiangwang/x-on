@@ -406,6 +406,17 @@ mod tests {
         for app in apps.iter().take(12) {
             eprintln!("  {}  <-  {}", app.name, app.aumid);
         }
+        // 诊断：终端这一项的**真实显示名**决定了 commands.rs 的 MERGE_ALIASES 能不能
+        // 命中（本机 Get-StartApps 给的是「终端」，而 SIGDN_NORMALDISPLAY 未必一致）。
+        let terminals: Vec<_> = apps
+            .iter()
+            .filter(|a| {
+                let n = a.name.to_lowercase();
+                n.contains("terminal") || a.name.contains("终端")
+            })
+            .map(|a| format!("{} <- {}", a.name, a.aumid))
+            .collect();
+        eprintln!("  terminal rows: {terminals:?}");
         assert!(
             apps.iter().all(|a| !aumid_looks_like_path(&a.aumid)),
             "file-path AppUserModelIDs must have been filtered"
